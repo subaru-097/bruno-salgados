@@ -1,0 +1,7 @@
+{
+  "name": "bruno-salgados",
+  "version": "1.0.0",
+  "private": true,
+  "description": "App de pedidos e painel do dono da Bruno Salgados",
+  "scripts": { "build": "node build.js" }
+}
