@@ -130,6 +130,9 @@ a.btn{text-decoration:none}
 .tn.round{width:44px;padding:0;justify-content:center;border-color:var(--line);background:var(--surface)}
 @media(max-width:720px){.tn .lab{display:none}.tn{padding:0 12px}.brand-name{font-size:1.15rem}.logo{width:40px;height:40px}}
 
+.ifood-h{flex-wrap:wrap;row-gap:4px}
+.ifood-logo{height:22px;width:auto;display:block;margin-left:2px}
+@media(max-width:600px){.b-tile .tl-h.ifood-h{flex-direction:column;align-items:flex-start;gap:5px}.b-tile .ifood-h>.svg-i{display:none}.b-tile .ifood-h span{font-size:.7rem;white-space:nowrap;letter-spacing:-.01em}.ifood-logo{height:19px;margin-left:0}}
 .closed-note{background:var(--bad-soft);color:var(--bad);padding:12px 16px;border-radius:14px;font-weight:600}
 
 /* stories */
@@ -715,6 +718,24 @@ table.tbl{border-collapse:collapse;width:100%;font-size:.93rem;font-variant-nume
 .steps{margin:0;padding-left:20px;color:var(--fg-2);font-size:.9rem;line-height:1.6;display:flex;flex-direction:column;gap:4px}
 @media(max-width:1060px){.mg-grid{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:640px){.mg-send .btn{min-width:0;flex:1}.rp-row{padding:10px 16px}}
+
+/* mesas e contas abertas */
+.tables{display:flex;flex-wrap:wrap;gap:8px}
+.tbl-chip{display:flex;flex-direction:column;align-items:flex-start;gap:2px;min-width:104px;padding:10px 14px;border-radius:14px;border:1px dashed var(--line-2);background:transparent;color:var(--fg-2);cursor:pointer;font:inherit;text-align:left}
+.tbl-chip b{color:var(--fg);font-size:.95rem}
+.tbl-chip span{font-size:.8rem}
+.tbl-chip:hover{border-color:var(--accent)}
+.tbl-chip.busy{border-style:solid;border-color:color-mix(in srgb,var(--accent) 55%,transparent);background:var(--accent-soft)}
+.tbl-chip.busy span{color:var(--accent-text);font-weight:700}
+.aw.tab{cursor:pointer;user-select:none}
+.aw.tab:hover{border-color:var(--accent)}
+.inc-x{position:absolute;right:-6px;top:-6px}
+.inc-top .inc-more{right:48px}
+.stock-alert{width:100%;text-align:left;display:flex;flex-direction:column;gap:8px;background:var(--warn-soft);border:1px solid color-mix(in srgb,var(--warn) 40%,transparent);border-radius:16px;padding:12px 14px}
+.stock-alert>b{display:flex;align-items:center;gap:8px;color:var(--warn)}
+.stock-alert>b .svg-i{width:18px;height:18px}
+.sa-row{display:flex;align-items:center;gap:10px}
+.sa-row>span:first-child{flex:1;font-weight:600}
 
 /* caixa */
 .cx-top{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr) minmax(0,1fr) minmax(0,1fr);gap:18px}

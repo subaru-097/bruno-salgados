@@ -58,7 +58,7 @@ function renderClient() {
   const kit = CL.prods.find(p => p.is_combo && p.is_featured) || CL.prods.find(p => p.is_combo);
   const seen = store.get("seenStories", []);
   const last = store.get("lastOrder"); const hasLast = last && Date.now() - last.t < 6 * 36e5;
-  const cats = CL.cats.filter(c => CL.prods.some(p => p.category_id === c.id));
+  const cats = CL.cats.filter(c => CL.prods.some(p => p.category_id === c.id && avail(p)));
   if (!CL.cat || !cats.some(c => c.id === CL.cat)) CL.cat = cats[0]?.id || null;
   wrap.innerHTML = `
   <header class="c-top">
@@ -76,7 +76,7 @@ function renderClient() {
   <section class="bento">
     <div class="b-hero" id="hero"></div>
     <div class="b-side">
-      <div class="b-tile"><div class="tl-h">${ICON.bolt}<span>Entrega</span></div>${s.delivery_enabled
+      <div class="b-tile"><div class="tl-h ifood-h">${ICON.bolt}<span>Entrega em parceria com</span><img class="ifood-logo" src="${PHOTOS.ifood}" alt="iFood"></div>${s.delivery_enabled
         ? `<strong>a partir de <em class="num">${money(s.delivery_base_fee)}</em></strong><div class="sub">${ICON.clock}<span>Até ${Number(s.delivery_max_km)} km · ${Number(s.prep_minutes)}–${Number(s.prep_minutes) + 20} min</span></div>`
         : `<strong>Só retirada hoje</strong><div class="sub">${ICON.pin}<span>${esc(s.address || "")}</span></div>`}</div>
       ${kit ? `<button class="b-tile" data-scroll="${kit.category_id}"><div class="tl-h">${ICON.gift}<span>Para festa</span></div><strong>${splitTitle(kit.name).replace(/<\/?em>/g, "")}</strong>
@@ -94,7 +94,7 @@ function renderClient() {
     <label class="search">${ICON.search}<span class="sr">Pesquisar</span><input id="c-q" type="search" placeholder="Pesquisar salgados…" value="${esc(CL.q || "")}" autocomplete="off"></label>
   </div>
   <div id="c-list" style="display:flex;flex-direction:column;gap:34px"></div>
-  <footer class="c-foot"><span>${esc(s.store_name)} · ${esc(s.address || "")} · ${esc(s.opening_hours || "")}</span><a href="#admin">Área do dono</a></footer>`;
+  <footer class="c-foot"><span>${esc(s.store_name)} · ${esc(s.address || "")} · ${esc(s.opening_hours || "")}</span>${window.BS_APP === "client" ? "" : `<a href="#admin">Área do dono</a>`}</footer>`;
   renderHero(); renderClientList(); renderCartBar();
   $("#c-theme").onclick = () => { themeToggle(); renderClient(); };
   $("#c-install") && ($("#c-install").onclick = async () => { CL.install.prompt(); try { await CL.install.userChoice; } catch {} CL.install = null; renderClient(); });
@@ -135,8 +135,8 @@ function renderClientList() {
   const el = $("#c-list"); if (!el) return;
   const q = (CL.q || "").trim().toLowerCase();
   const match = p => !q || p.name.toLowerCase().includes(q) || (p.description || "").toLowerCase().includes(q);
-  const groups = CL.cats.map(c => ({ c, items: CL.prods.filter(p => p.category_id === c.id && match(p)) })).filter(g => g.items.length);
-  const loose = CL.prods.filter(p => !CL.cats.some(c => c.id === p.category_id) && match(p));
+  const groups = CL.cats.map(c => ({ c, items: CL.prods.filter(p => p.category_id === c.id && avail(p) && match(p)) })).filter(g => g.items.length);
+  const loose = CL.prods.filter(p => !CL.cats.some(c => c.id === p.category_id) && avail(p) && match(p));
   if (loose.length) groups.push({ c: { id: "outros", name: "Outros" }, items: loose });
   CL.open ||= {};
   if (!groups.length) { el.innerHTML = q ? `<div class="empty-search"><h3>Nada com “${esc(CL.q)}”</h3><p>Tente outro nome, como coxinha ou kibe.</p></div>`

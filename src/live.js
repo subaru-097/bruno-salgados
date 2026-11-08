@@ -49,6 +49,7 @@ function receiptHTML(o, s = AD.s || {}) {
     ${o.change_for ? line("Troco para", money(o.change_for)) + line("Levar de troco", money(Math.max(0, o.change_for - o.total))) : ""}
     <div class="c b" style="margin-top:4px">${{ pago: "PAGO", fiado: "LANÇADO NO FIADO", pendente: "A RECEBER NA ENTREGA/RETIRADA", estornado: "ESTORNADO" }[o.payment_status] || ""}</div>
     ${o.notes ? `<div class="hr"></div><div><b>Obs.:</b> ${esc(o.notes)}</div>` : ""}
+    ${o.stock_alerts?.length ? `<div class="hr"></div><div class="b">ATENÇÃO ESTOQUE:</div>${o.stock_alerts.map(a => `<div>${esc(a.name)}: ${a.stock <= 0 ? "ACABOU" : "restam " + a.stock}</div>`).join("")}` : ""}
     <div class="hr"></div>
     ${s.receipt_footer ? `<div class="c">${esc(s.receipt_footer)}</div>` : ""}<div class="c sm">Não é documento fiscal</div></div>`;
   const copies = Math.max(1, Math.min(3, Number(s.receipt_copies) || 1));
@@ -95,7 +96,7 @@ async function showIncoming() {
   const s = AD.s || {}, items = o.order_items || [];
   const sh = openSheet(`<div class="inc-top"><span class="inc-pulse">${ICON.bell}</span><div><span class="eyebrow" style="color:var(--accent)">Pedido novo pelo app</span><h2>Pedido nº ${o.code}</h2>
       <p class="faint">${fmtTime(o.created_at)} · ${kindOf(o)}${o.distance_km ? " · " + String(o.distance_km).replace(".", ",") + " km" : ""}</p></div>
-      <span class="inc-more" id="inc-more" hidden></span></div>
+      <span class="inc-more" id="inc-more" hidden></span><button class="btn icon ghost inc-x" id="inc-x" aria-label="Fechar e decidir depois" title="Fechar e decidir depois">✕</button></div>
     <div id="inc-body">
       <div class="inc-cust"><div class="who"><i>${initials(o.customer_name)}</i><div><b>${esc(o.customer_name)}</b><span class="faint" style="font-size:.86rem">${esc(o.customer_phone || "")}</span></div></div>${typeChip(o)}</div>
       ${o.fulfillment === "entrega" ? `<div class="inc-addr">${ICON.pin}<div>${esc(o.address || "")}${o.address_ref ? `<div class="faint">${esc(o.address_ref)}</div>` : ""}</div></div>` : ""}
@@ -107,16 +108,24 @@ async function showIncoming() {
     </div>`, { cls: "incoming", onClose: () => { stopAlert(); AD.incOpen = false; } });
   updateQueueBadge();
   const body = $("#inc-body", sh.el);
+  $("#inc-x", sh.el).onclick = () => { stopAlert(); AD.queue.shift(); sh.close(); toast(`Pedido nº ${o.code} continua em Pedidos › Aguardando aceite`);
+    if (AD.view === "pedidos") renderView(); if (AD.queue.length) showIncoming(); };
   const next = () => { AD.queue.shift(); sh.close(); if (AD.queue.length) { if (AD.s?.alert_repeat) alertTimer ||= setInterval(() => AD.queue.length ? playAlert() : stopAlert(), 5000); showIncoming(); } };
   $("#inc-ok", sh.el).onclick = e => busy(e.currentTarget, async () => {
     await API.setStatus(o.id, "preparando"); stopAlert(); AD.newIds.delete(o.id);
-    const accepted = { ...o, status: "preparando" }, auto = !!AD.s?.receipt_auto;
+    const prods = await API.products().catch(() => []);
+    const low = [...new Set(items.map(i => i.product_id))].map(id => prods.find(p => p.id === id)).filter(p => p && p.track_stock && p.stock <= p.low_stock_alert);
+    const accepted = { ...o, status: "preparando", stock_alerts: low.map(p => ({ name: p.name, stock: p.stock })) }, auto = !!AD.s?.receipt_auto;
     if (auto) printReceipt(accepted, { silentFail: true });
-    body.innerHTML = `<div class="inc-done">${ICON.checkBig}<h3>Pedido aceito</h3><p class="muted">${auto ? "O recibo foi enviado para a impressora." : "Quer imprimir o recibo?"}</p>
+    body.innerHTML = `<div class="inc-done">${ICON.checkBig}<h3>Pedido aceito</h3>
+      ${low.length ? `<div class="stock-alert"><b>${ICON.bell}Atenção ao estoque</b>${low.map(p => `<div class="sa-row"><span>${esc(p.name)}</span><span class="${p.stock <= 0 ? "pay pendente" : "pay fiado"}">${p.stock <= 0 ? "acabou" : `restam ${p.stock}`}</span>
+        <button class="btn sm" data-restock="${p.id}">Repor</button></div>`).join("")}<span class="faint" style="font-size:.8rem">O que acabou some do cardápio do cliente até você repor.</span></div>` : ""}
+      <p class="muted">${auto ? "O recibo foi enviado para a impressora." : "Quer imprimir o recibo?"}</p>
       <div class="row" style="justify-content:center">${auto ? `<button class="btn ghost" id="inc-print">Imprimir de novo</button>` : `<button class="btn ghost" id="inc-skip">Sem recibo</button><button class="btn primary" id="inc-print">${ICON.receipt}Imprimir recibo</button>`}
       ${o.customer_phone ? `<a class="btn ghost" href="${waLink(o.customer_phone, `Oi ${o.customer_name}! Seu pedido nº ${o.code} da ${s.store_name || "Bruno Salgados"} foi aceito e já está em preparo.`)}" target="_blank" rel="noopener">Avisar no WhatsApp</a>` : ""}</div>
       <button class="link-btn" id="inc-next" style="align-self:center">${AD.queue.length > 1 ? `Ver próximo pedido (${AD.queue.length - 1}) ${ICON.arrow}` : "Fechar"}</button></div>`;
     $("#inc-print", body).onclick = () => printReceipt(accepted);
+    $$("[data-restock]", body).forEach(b => b.onclick = () => amountStock(prods.find(p => p.id === b.dataset.restock), async (id, v) => { await API.setStock(id, Math.max(0, v)); b.closest(".sa-row").querySelector("span:nth-child(2)").outerHTML = `<span class="pay pago">${v} em estoque</span>`; b.remove(); }));
     $("#inc-skip", body) && ($("#inc-skip", body).onclick = next);
     $("#inc-next", body).onclick = next;
     refreshNav(); if (["inicio", "pedidos", "vendas"].includes(AD.view)) renderView();

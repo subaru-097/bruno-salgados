@@ -51,15 +51,24 @@ async function startAdmin() {
   if (!AD.user && API.mode === "demo") { await API.signIn(); AD.user = await API.getUser(); }
   if (!AD.user) return renderLogin();
   AD.s = await API.settings();
+  AD.sys = await API.systemStatus().catch(() => null);
+  // faxina diária: tira do armazenamento os stories vencidos (plano grátis = 1 GB)
+  try { const k = "bs_cleanup", d = dayKey(new Date()); if (localStorage.getItem(k) !== d) { localStorage.setItem(k, d); API.cleanupStories().catch(() => {}); } } catch {}
   const hv = location.hash.replace("#admin-", "").replace("#admin", "");
   if (VIEWS.some(v => v[0] === hv)) AD.view = hv;
   renderShell();
-  API.orders({ from: new Date(Date.now() - 2 * 864e5) }).then(os => { const pend = os.filter(o => o.channel === "app" && o.status === "novo").reverse();
-    pend.forEach((o, i) => enqueueOrder(o.id, { sound: i === pend.length - 1 })); }).catch(() => {});
+  AD.seen ||= new Set();
+  const checkNew = (first) => API.orders({ from: new Date(Date.now() - 2 * 864e5) }).then(os => {
+    const pend = os.filter(o => o.channel === "app" && o.status === "novo" && !AD.seen.has(o.id)).reverse();
+    pend.forEach((o, i) => { AD.seen.add(o.id); enqueueOrder(o.id, { sound: i === pend.length - 1 }); });
+    if (!first && pend.length) { refreshNav(); if (["inicio", "pedidos"].includes(AD.view)) renderView(); } }).catch(() => {});
+  checkNew(true);
+  // reserva: se a conexão ao vivo cair, confere pedidos novos a cada 30 segundos
+  clearInterval(AD.poll); AD.poll = setInterval(() => { if (AD.user) checkNew(false); }, 30000);
   if (!AD.live) {
     AD.live = true;
     bus.on("orders", p => { if (!AD.user) return; const o = p?.new;
-      if (p?.eventType === "INSERT" && o?.channel === "app" && o.status === "novo") { AD.newIds.add(o.id); enqueueOrder(o.id); }
+      if (p?.eventType === "INSERT" && o?.channel === "app" && o.status === "novo" && !AD.seen?.has(o.id)) { AD.seen?.add(o.id); AD.newIds.add(o.id); enqueueOrder(o.id); }
       refreshNav(); if (["inicio", "pedidos", "vendas"].includes(AD.view)) renderView(); });
     bus.on("cash", () => AD.user && AD.view === "caixa" && renderView());
     bus.on("products", debounce(() => AD.user && ["produtos", "inicio"].includes(AD.view) && renderView(), 400));
@@ -76,23 +85,15 @@ function renderLogin() {
     <div class="brand">${LOGO}<div><div class="brand-name">Bruno Salgados</div><div class="brand-sub">Painel do dono</div></div></div>
     ${demo ? `<p class="muted">Você está no modo demonstração, com dados de exemplo. Nada aqui afeta a loja de verdade.</p>
       <button class="btn primary block" id="lg-demo">Entrar na demonstração</button>`
-    : `<div class="seg" role="group"><button data-m="in" aria-pressed="true">Entrar</button><button data-m="up" aria-pressed="false">Primeiro acesso</button></div>
-      <p class="muted" id="lg-hint" style="font-size:.88rem">Use o e-mail e a senha do dono da loja.</p>
+    : `<p class="muted" style="font-size:.9rem">Entre com o e-mail e a senha do painel.</p>
       <form id="lg-form" style="display:flex;flex-direction:column;gap:12px">
-        <div class="field"><label for="lg-email">E-mail</label><input class="input" id="lg-email" type="email" autocomplete="email" required></div>
-        <div class="field"><label for="lg-pass">Senha</label><input class="input" id="lg-pass" type="password" autocomplete="current-password" minlength="6" required></div>
+        <div class="field"><label for="lg-email">E-mail</label><input class="input" id="lg-email" type="email" autocomplete="username" required></div>
+        <div class="field"><label for="lg-pass">Senha</label><input class="input" id="lg-pass" type="password" autocomplete="current-password" required></div>
         <button class="btn primary block" id="lg-go" type="submit">Entrar</button></form>`}
-    <a href="#" style="text-align:center;font-size:.88rem">Ver o cardápio do cliente</a></div></div>`;
+    </div></div>`;
   if (demo) { $("#lg-demo").onclick = async () => { await API.signIn(); startAdmin(); }; return; }
-  let mode = "in";
-  $$("[data-m]").forEach(b => b.onclick = () => { mode = b.dataset.m; $$("[data-m]").forEach(x => x.setAttribute("aria-pressed", x === b));
-    $("#lg-go").textContent = mode === "in" ? "Entrar" : "Criar conta do dono";
-    $("#lg-hint").textContent = mode === "in" ? "Use o e-mail e a senha do dono da loja." : "A primeira conta criada vira a conta do dono. Depois disso, ninguém mais consegue virar dono por aqui."; });
   $("#lg-form").onsubmit = e => { e.preventDefault(); busy($("#lg-go"), async () => {
-    const email = $("#lg-email").value.trim(), pass = $("#lg-pass").value;
-    if (mode === "up") { const logged = await API.signUp(email, pass);
-      if (!logged) { toast("Conta criada. Confirme pelo link enviado ao seu e-mail e depois entre."); return; } }
-    else await API.signIn(email, pass);
+    await API.signIn($("#lg-email").value.trim(), $("#lg-pass").value);
     if (!(await API.claimAdmin())) { await API.signOut(); toast("Essa conta não tem acesso ao painel.", true); return; }
     startAdmin(); }); };
 }
@@ -125,7 +126,7 @@ document.addEventListener("click", e => { if (!e.target.closest(".pop")) closePo
 async function openBell() {
   if ($(".pop")) return closePops();
   const [orders, prods] = await Promise.all([API.orders({ from: new Date(Date.now() - 2 * 864e5) }), API.products()]);
-  const news = orders.filter(o => o.status === "novo"), low = prods.filter(p => p.is_active && p.track_stock && p.stock <= p.low_stock_alert);
+  const news = orders.filter(o => o.channel === "app" && o.status === "novo"), low = prods.filter(p => p.is_active && p.track_stock && p.stock <= p.low_stock_alert);
   const pop = h(`<div class="pop" role="menu"><div class="pop-h">Avisos</div>
     ${news.map(o => `<button data-o="${o.id}">${ICON.cart}<span>Pedido #${o.code} de ${esc(o.customer_name)}<br><span class="sm">${money(o.total)} · ${fmtTime(o.created_at)}</span></span></button>`).join("")}
     ${low.map(p => `<button data-p>${ICON.cube}<span>${esc(p.name)}<br><span class="sm">${p.stock <= 0 ? "Esgotado" : p.stock + " no estoque"}</span></span></button>`).join("")}
@@ -137,7 +138,7 @@ async function openBell() {
 function openProfile() {
   if ($(".pop")) return closePops();
   const pop = h(`<div class="pop" role="menu" style="width:260px"><div class="pop-h">${esc(AD.user?.email || "Dono")}</div>
-    <a href="#">${ICON.bag}Ver cardápio do cliente</a><button id="pp-theme">${isDark() ? ICON.sun : ICON.moon}${isDark() ? "Modo claro" : "Modo escuro"}</button>
+    <a href="${CLIENT_URL()}" target="_blank" rel="noopener">${ICON.bag}Ver cardápio do cliente</a><button id="pp-theme">${isDark() ? ICON.sun : ICON.moon}${isDark() ? "Modo claro" : "Modo escuro"}</button>
     <button id="pp-out">${ICON.out}Sair</button></div>`);
   $(".a-main").appendChild(pop);
   $("#pp-theme").onclick = () => { closePops(); themeToggle(); renderShell(); };
@@ -146,7 +147,7 @@ function openProfile() {
 async function refreshNav() {
   const orders = await API.orders({ from: new Date(Date.now() - 2 * 864e5) }).catch(() => []);
   const pend = orders.filter(o => o.channel === "app" && ["novo", "preparando", "pronto", "saiu"].includes(o.status)).length;
-  const news = orders.filter(o => o.status === "novo").length;
+  const news = orders.filter(o => o.channel === "app" && o.status === "novo").length;
   const nav = $("#a-nav"); if (!nav) return;
   nav.innerHTML = VIEWS.map(([k, l, i]) => `<button class="nav-btn" data-v="${k}" ${AD.view === k ? 'aria-current="page"' : ""}>${{ inicio: ICON.home, vendas: ICON.cart, pedidos: ICON.receipt, caixa: ICON.cash, clientes: ICON.users, produtos: ICON.cube, stories: ICON.story, relatorios: ICON.bars, ajustes: ICON.gear, ajuda: ICON.help, mensagens: ICON.wa }[k]}${l}${k === "pedidos" && pend ? `<span class="badge num">${pend}</span>` : ""}</button>`).join("");
   $$("[data-v]", nav).forEach(b => b.onclick = () => go(b.dataset.v));
@@ -188,7 +189,10 @@ async function vInicio(el) {
   const recent = orders.slice(0, 6);
   const low = prods.filter(p => p.is_active && p.track_stock && p.stock <= p.low_stock_alert);
   const liveStories = stories.filter(s => new Date(s.expires_at) > new Date());
-  const tip = low.length ? { t: `${low.length} produto${low.length > 1 ? "s" : ""} com estoque baixo`, d: low.slice(0, 3).map(p => p.name).join(", ") + ". Reponha para não perder vendas.", b: "Ajustar estoque", go: "produtos" }
+  const pingAge = AD.sys?.last_ping ? (Date.now() - new Date(AD.sys.last_ping)) / 864e5 : null;
+  const tip = API.mode !== "demo" && AD.sys && (pingAge == null || pingAge > 2) ? { t: "O vigia automático parou", d: "Ele mantém o sistema acordado no plano grátis. Abra o GitHub › Actions e reative o “Manter ativo”.", b: "Ver detalhes", go: "ajustes" }
+    : AD.s?.delivery_enabled && AD.s.lat == null ? { t: "Localize a loja para ligar as entregas", d: "Sem o ponto de saída no mapa, o app não calcula o frete e só aceita retirada.", b: "Localizar agora", go: "ajustes" }
+    : low.length ? { t: `${low.length} produto${low.length > 1 ? "s" : ""} com estoque baixo`, d: low.slice(0, 3).map(p => p.name).join(", ") + ". Reponha para não perder vendas.", b: "Ajustar estoque", go: "produtos" }
     : !liveStories.length ? { t: "Poste o story do dia", d: "Uma foto da fornada saindo chama o cliente para pedir.", b: "Postar story", go: "stories" }
     : { t: "Mantenha seu cardápio sempre atualizado!", d: "Ofereça novidades e aumente suas vendas.", b: "Editar cardápio", go: "produtos" };
   el.innerHTML = `
@@ -242,12 +246,17 @@ const typeChip = o => { const k = o.fulfillment === "entrega" ? "ent" : o.fulfil
   return `<span class="tchip ${k}">${k === "ent" ? ICON.bolt : k === "ret" ? ICON.bag : ICON.pos}${kindOf(o)}</span>`; };
 const payText = o => o.payments?.length > 1 ? o.payments.map(x => METHOD_LABEL[x.method]).join(" + ") : METHOD_LABEL[o.payment_method];
 
+async function openTabs() {
+  const os = await API.orders({ from: new Date(Date.now() - 3 * 864e5) });
+  return os.filter(o => o.channel === "balcao" && o.payment_status === "pendente" && o.status !== "cancelado").sort((a, b) => (a.table_no || 99) - (b.table_no || 99) || a.created_at.localeCompare(b.created_at));
+}
 async function vVendas(el) {
   const today = startOfDay(new Date());
   const [sess, orders] = await Promise.all([API.cashCurrent(), API.orders({ from: today })]);
   const ok = orders.filter(validOrder), rev = sumBy(ok, orderRevenue), paidN = ok.filter(o => ["pago", "fiado"].includes(o.payment_status)).length;
   const pend = ok.filter(o => o.payment_status === "pendente");
   const by = k => ok.filter(o => (o.fulfillment === k)).length;
+  const open = await openTabs(), nT = Number(AD.s?.table_count || 0), busyT = new Set(open.map(o => o.table_no).filter(Boolean));
   el.innerHTML = head("Vendas", "Registre vendas do balcão e acompanhe o que saiu hoje") + `
   ${!sess ? `<div class="warn-bar"><span>O caixa está fechado. Abra o caixa para receber em dinheiro, Pix ou cartão. Vendas no fiado funcionam assim mesmo.</span><button class="btn primary sm" data-go="caixa">Abrir caixa</button></div>` : ""}
   <section class="sale-home">
@@ -256,18 +265,40 @@ async function vVendas(el) {
       <span class="s">${paidN} venda${paidN === 1 ? "" : "s"} · ticket médio ${money(paidN ? rev / paidN : 0)}</span>
       <span class="chips"><span class="tchip bal">${ICON.pos}Balcão ${by("balcao")}</span><span class="tchip ret">${ICON.bag}Retirada ${by("retirada")}</span><span class="tchip ent">${ICON.bolt}Entrega ${by("entrega")}</span></span>
       ${pend.length ? `<span class="pend">${pend.length} a receber · ${money(sumBy(pend, o => o.total))}</span>` : ""}<span class="link-btn" style="margin-top:auto">Ver vendas de hoje ${ICON.arrow}</span></button>
+  </section>
+  <section class="await ${open.length ? "hot" : ""}"><div class="card-h"><h3>${ICON.receipt}Aguardando pagamento</h3>
+      <span class="faint">${open.length} conta${open.length === 1 ? "" : "s"} aberta${open.length === 1 ? "" : "s"}${nT ? ` · ${nT - busyT.size} de ${nT} mesas livres` : ""}</span></div>
+    ${nT ? `<div class="tables">${Array.from({ length: nT }, (_, i) => i + 1).map(n => { const o = open.find(x => x.table_no === n);
+      return `<button class="tbl-chip ${o ? "busy" : ""}" data-tbl="${n}" title="${o ? "Abrir a conta da mesa " + n : "Nova venda na mesa " + n}"><b>Mesa ${n}</b><span class="num">${o ? money(o.total) : "livre"}</span></button>`; }).join("")}</div>` : ""}
+    ${open.length ? `<div class="await-grid">${open.map(o => { const mins = Math.max(1, Math.round((Date.now() - new Date(o.created_at)) / 6e4));
+      return `<article class="aw tab" data-tab="${o.id}" title="Dois cliques para editar">
+        <div class="aw-h"><div><b>${o.table_no ? "Mesa " + o.table_no : esc(o.customer_name)}</b><span class="faint">Nº ${o.code} · aberta ${fmtTime(o.created_at)} · há ${mins < 60 ? mins + " min" : Math.floor(mins / 60) + " h"}</span></div><span class="st preparando">Comendo</span></div>
+        <div class="aw-items">${(o.order_items || []).map(i => `<span>${i.qty}× ${esc(i.name)}</span>`).join("")}</div>
+        <div class="aw-f"><b class="num" style="font-size:1.15rem">${money(o.total)}</b><span class="row" style="gap:8px"><button class="btn sm ghost" data-edit="${o.id}">Editar</button><button class="btn sm primary" data-pay="${o.id}">Pagar</button></span></div>
+      </article>`; }).join("")}</div>` : `<p class="muted">Nenhuma conta aberta. Na nova venda, escolha a mesa e toque em <b>Aguardar pagamento</b> para o cliente pagar no fim.</p>`}
   </section>`;
   $$("[data-go]", el).forEach(b => b.onclick = () => go(b.dataset.go));
   $("#sv-new").onclick = () => saleModal();
+  const byId = id => open.find(o => o.id === id);
+  $$("[data-edit]", el).forEach(b => b.onclick = e => { e.stopPropagation(); saleModal({ edit: byId(b.dataset.edit) }); });
+  $$("[data-pay]", el).forEach(b => b.onclick = e => { e.stopPropagation(); saleModal({ edit: byId(b.dataset.pay), toPay: true }); });
+  $$("[data-tab]", el).forEach(c => c.ondblclick = () => saleModal({ edit: byId(c.dataset.tab) }));
+  $$("[data-tbl]", el).forEach(b => b.onclick = () => { const o = open.find(x => x.table_no === +b.dataset.tbl); o ? saleModal({ edit: o }) : saleModal({ mesa: +b.dataset.tbl }); });
   $("#sv-today").onclick = () => todaySales(orders);
   if (!AD.saleKey) { AD.saleKey = true; document.addEventListener("keydown", e => { if (e.key === "F2" && AD.view === "vendas" && !$(".overlay")) { e.preventDefault(); saleModal(); } }); }
 }
 
-async function saleModal() {
-  const [prods, custs, sess] = await Promise.all([API.products(), API.customers(), API.cashCurrent()]);
-  const act = prods.filter(p => p.is_active);
-  const S = { items: [], step: "prod", pays: [], cust: null, disc: 0, method: null, q: "", sel: 0 };
-  const sh = openSheet(`<div class="sheet-head"><div><h2>Nova venda</h2><p class="faint" id="sm-sub" style="margin-top:2px">1. Escolha os produtos</p></div><button class="btn icon ghost" data-close aria-label="Fechar">✕</button></div>
+async function saleModal({ edit, toPay, mesa } = {}) {
+  const [prods, custs, sess, open] = await Promise.all([API.products(), API.customers(), API.cashCurrent(), openTabs()]);
+  if (edit) edit = open.find(o => o.id === edit.id) || edit;
+  const act = prods.filter(p => p.is_active || edit?.order_items?.some(i => i.product_id === p.id));
+  // na edição, o estoque já descontado pela conta volta a contar como disponível
+  if (edit) (edit.order_items || []).forEach(i => { const p = act.find(x => x.id === i.product_id); if (p?.track_stock) p.stock += i.qty; });
+  const nT = Number(AD.s?.table_count || 0), busyT = new Set(open.filter(o => o.id !== edit?.id).map(o => o.table_no).filter(Boolean));
+  const S = { items: edit ? (edit.order_items || []).filter(i => i.product_id).map(i => ({ id: i.product_id, qty: i.qty })) : [], step: toPay ? "pay" : "prod", pays: [],
+    cust: edit?.customer_id ? custs.find(c => c.id === edit.customer_id) || null : null, disc: Number(edit?.discount || 0), method: null, q: "", sel: 0, mesa: edit ? edit.table_no || null : mesa || null };
+  const title = edit ? (edit.table_no ? `Mesa ${edit.table_no}` : `Conta nº ${edit.code}`) : "Nova venda";
+  const sh = openSheet(`<div class="sheet-head"><div><h2>${esc(title)}</h2><p class="faint" id="sm-sub" style="margin-top:2px">1. Escolha os produtos</p></div><button class="btn icon ghost" data-close aria-label="Fechar">✕</button></div>
     <div class="sale"><div class="sale-left" id="sm-left"></div><aside class="sale-right" id="sm-right"></aside></div><div class="sm-bar" id="sm-bar" hidden></div>`, { cls: "wide" });
   const el = sh.el;
   const line = id => act.find(p => p.id === id);
@@ -280,7 +311,7 @@ async function saleModal() {
     const it = S.items.find(i => i.id === p.id); if (it) it.qty += n; else S.items.push({ id: p.id, qty: n }); drawRight(); drawList(); };
 
   function drawLeft() {
-    $("#sm-sub", el).textContent = S.step === "prod" ? "1. Escolha os produtos" : S.step === "pay" ? "2. Forma de pagamento" : "Venda concluída";
+    $("#sm-sub", el).textContent = S.step === "prod" ? (edit ? "Adicione ou tire produtos da conta" : "1. Escolha os produtos") : S.step === "pay" ? (edit ? "Fechar a conta" : "2. Forma de pagamento") : "Venda concluída";
     const L = $("#sm-left", el);
     if (S.step === "prod") {
       L.innerHTML = `<label class="sm-search">${ICON.search}<input id="sm-q" placeholder="Digite o código ou o nome do produto" autocomplete="off" value="${esc(S.q)}" aria-label="Código ou nome do produto"></label>
@@ -349,7 +380,8 @@ async function saleModal() {
   function drawRight() {
     const R = $("#sm-right", el), ls = lines(), rem = remaining(), editing = S.step === "prod";
     const needCash = S.pays.some(x => x.method !== "fiado") && !sess;
-    R.innerHTML = `<h3>Resumo da venda</h3>
+    const mesaSel = nT ? `<div class="field"><label for="sm-mesa">Mesa</label><select class="input" id="sm-mesa" ${!editing && !edit ? "" : ""}><option value="">Sem mesa (balcão)</option>${Array.from({ length: nT }, (_, i) => i + 1).map(n => `<option value="${n}" ${S.mesa === n ? "selected" : ""} ${busyT.has(n) ? "disabled" : ""}>Mesa ${n}${busyT.has(n) ? " (ocupada)" : ""}</option>`).join("")}</select></div>` : "";
+    R.innerHTML = `<h3>${edit ? "Conta" : "Resumo da venda"}</h3>${editing || !edit ? mesaSel : ""}
       <div class="sm-cart">${ls.length ? ls.map(l => `<div class="sm-line"><div class="grow"><b>${esc(l.p.name)}</b><span class="faint num">${money(l.p.price)} cada</span></div>
         ${editing ? `<span class="qty"><button data-m="${l.id}" aria-label="Menos">−</button><b class="num">${l.qty}</b><button data-pl="${l.id}" aria-label="Mais">+</button></span>` : `<span class="faint num">${l.qty}×</span>`}
         <b class="num">${money(l.p.price * l.qty)}</b></div>`).join("") : `<p class="faint" style="padding:18px 0;text-align:center">Nenhum produto ainda.<br>Toque num produto para adicionar.</p>`}</div>
@@ -357,9 +389,10 @@ async function saleModal() {
         <div class="total-line"><span class="muted">Total</span><b>${money(total())}</b></div>
         ${S.pays.length ? `<div class="sm-pays">${S.pays.map((x, i) => `<div class="calc-row"><span>${METHOD_LABEL[x.method]}${x.method === "fiado" && S.cust ? " · " + esc(S.cust.name) : ""}${x.change ? ` <span class="faint">(recebido ${money(x.received)})</span>` : ""}</span><span class="row" style="gap:6px;flex-wrap:nowrap"><b class="num">${money(x.amount)}</b><button class="x-btn" data-rm="${i}" aria-label="Remover pagamento">✕</button></span></div>`).join("")}
           ${rem > 0 ? `<div class="calc-row" style="color:var(--bad)"><span style="color:inherit">Falta</span><b class="num">${money(rem)}</b></div>` : change() > 0 ? `<div class="calc-row" style="color:var(--good)"><span style="color:inherit">Troco</span><b class="num">${money(change())}</b></div>` : ""}</div>` : ""}
-        ${editing ? `<button class="btn primary block big-btn" id="sm-next">Ir para pagamento ${ICON.arrow}</button>`
-          : `<button class="btn primary block big-btn" id="sm-fin" ${rem > 0 || needCash ? "disabled" : ""}>${needCash ? "Abra o caixa para receber" : rem > 0 ? "Falta " + money(rem) : "Finalizar venda"}</button>`}
-        <button class="btn ghost block" id="sm-later">Salvar para pagar depois</button>` : ""}`;
+        ${editing ? `<button class="btn primary block big-btn" id="sm-next">${edit ? "Pagar e concluir" : "Ir para pagamento"} ${ICON.arrow}</button>`
+          : `<button class="btn primary block big-btn" id="sm-fin" ${rem > 0 || needCash ? "disabled" : ""}>${needCash ? "Abra o caixa para receber" : rem > 0 ? "Falta " + money(rem) : edit ? "Concluir venda" : "Pagar agora e finalizar"}</button>`}
+        ${edit ? `<button class="btn ghost block" id="sm-save">Salvar alterações e voltar a esperar</button>` : `<button class="btn ghost block" id="sm-later">${ICON.clockF}Aguardar pagamento${S.mesa ? " · Mesa " + S.mesa : ""}</button>`}` : ""}
+      ${edit ? `<button class="link-btn" id="sm-cancel" style="color:var(--bad);align-self:center">Cancelar esta conta</button>` : ""}`;
     const bar = $("#sm-bar", el), n = sumBy(ls, l => l.qty);
     bar.hidden = !ls.length || S.step === "done" || (S.step === "pay" && !!S.method);
     bar.innerHTML = editing ? `<span><b class="num">${money(total())}</b><span class="faint"> · ${n} ${n === 1 ? "item" : "itens"}</span></span><button class="btn primary" id="smb-go">Pagamento ${ICON.arrow}</button>`
@@ -375,19 +408,38 @@ async function saleModal() {
     $("#sm-next", R) && ($("#sm-next", R).onclick = () => { S.step = "pay"; drawLeft(); drawRight(); });
     $("#sm-fin", R) && ($("#sm-fin", R).onclick = e => finish(true, e.currentTarget));
     $("#sm-later", R) && ($("#sm-later", R).onclick = e => finish(false, e.currentTarget));
+    $("#sm-save", R) && ($("#sm-save", R).onclick = e => finish(false, e.currentTarget));
+    $("#sm-mesa", R) && ($("#sm-mesa", R).onchange = e => { S.mesa = e.target.value ? +e.target.value : null; drawRight(); });
+    $("#sm-cancel", R) && ($("#sm-cancel", R).onclick = async () => { if (!(await confirmSheet("Cancelar a conta?", "Os produtos voltam para o estoque e a conta some da lista.", "Cancelar conta", true))) return;
+      try { await API.setStatus(edit.id, "cancelado"); toast("Conta cancelada"); sh.close(); if (AD.view === "vendas") renderView(); } catch (x) { toast(errMsg(x), true); } });
   }
   const finish = (payNow, btn) => busy(btn, async () => {
     const fi = S.pays.find(x => x.method === "fiado");
     if (payNow && fi && S.cust?.credit_limit && Number(S.cust.balance) + fi.amount > Number(S.cust.credit_limit)) {
       if (!(await confirmSheet("Passa do limite de fiado", `${S.cust.name} já deve ${money(S.cust.balance)} e o limite é ${money(S.cust.credit_limit)}. Lançar mesmo assim?`, "Lançar no fiado"))) return; }
     const pays = payNow ? S.pays.map(x => ({ method: x.method, amount: x.amount })) : [];
-    const r = await API.placeOrder({ channel: "balcao", customer_name: S.cust?.name || "Balcão", customer_id: S.cust?.id || null, customer_phone: S.cust?.phone || null,
-      payment_method: pays[0]?.method || "dinheiro", payments: payNow ? pays : undefined, discount: S.disc, pay_now: payNow, items: S.items.map(i => ({ product_id: i.id, qty: i.qty })) });
+    const items = S.items.map(i => ({ product_id: i.id, qty: i.qty }));
+    const label = S.cust?.name || (S.mesa ? "Mesa " + S.mesa : "Balcão");
+    let r;
+    if (edit) {
+      const before = JSON.stringify((edit.order_items || []).map(i => [i.product_id, i.qty]).sort()), after = JSON.stringify(items.map(i => [i.product_id, i.qty]).sort());
+      if (!items.length) throw new Error("CARRINHO_VAZIO");
+      if (before !== after) await API.setOrderItems(edit.id, items);
+      const patch = { table_no: S.mesa }; if (!edit.customer_id || S.cust) Object.assign(patch, { customer_name: label, customer_id: S.cust?.id || null });
+      await API.updateOrder(edit.id, patch);
+      if (!payNow) { toast(`${S.mesa ? "Mesa " + S.mesa : "Conta"} atualizada`); sh.close(); if (AD.view === "vendas") renderView(); return; }
+      await API.payOrderSplit(edit.id, pays, S.cust?.id); await API.setStatus(edit.id, "entregue");
+      r = { code: edit.code, total: total() };
+    } else {
+      r = await API.placeOrder({ channel: "balcao", customer_name: label, customer_id: S.cust?.id || null, customer_phone: S.cust?.phone || null,
+        payment_method: pays[0]?.method || "dinheiro", payments: payNow ? pays : undefined, discount: S.disc, pay_now: payNow, items });
+      if (!payNow) { await API.setStatus(r.id, "preparando"); await API.updateOrder(r.id, { table_no: S.mesa }); }
+    }
     const ch = change();
     S.step = "done";
     $("#sm-sub", el).textContent = "Venda concluída";
     $("#sm-bar", el).hidden = true;
-    $(".sale", el).innerHTML = `<div class="sale-ok">${ICON.checkBig}<h3>${payNow ? `Venda #${r.code} registrada` : `Pedido #${r.code} salvo para pagar depois`}</h3>
+    $(".sale", el).innerHTML = `<div class="sale-ok">${ICON.checkBig}<h3>${payNow ? (edit ? `${S.mesa ? "Mesa " + S.mesa : "Conta"} paga e concluída` : `Venda nº ${r.code} registrada`) : `${S.mesa ? "Mesa " + S.mesa + " aberta" : "Conta aberta"}, aguardando pagamento`}</h3>
       <p class="muted">${money(r.total)}${payNow ? " · " + pays.map(x => METHOD_LABEL[x.method]).join(" + ") : ""}</p>${payNow && ch > 0 ? `<div class="diff ok" style="font-size:1.3rem">Troco: ${money(ch)}</div>` : ""}
       <div class="row" style="justify-content:center"><button class="btn primary" id="sm-again">${ICON.plus}Nova venda</button><button class="btn ghost" data-close>Fechar</button></div></div>`;
     $("#sm-again", el).onclick = () => { sh.close(); saleModal(); };
@@ -424,7 +476,7 @@ function todaySales(orders) {
 async function vPedidos(el) {
   const today = startOfDay(new Date());
   const orders = await API.orders({ from: new Date(today - 2 * 864e5) });
-  const live = orders.filter(o => ["novo", "preparando", "pronto", "saiu"].includes(o.status));
+  const live = orders.filter(o => o.channel === "app" && ["novo", "preparando", "pronto", "saiu"].includes(o.status));
   const done = orders.filter(o => ["entregue", "cancelado"].includes(o.status) && new Date(o.created_at) >= today && o.channel === "app");
   const S = [
     ["novo", "Aguardando aceite", ICON.bell, live.filter(o => o.status === "novo"), "hot"],
@@ -452,6 +504,7 @@ async function vPedidos(el) {
   $$("[data-see]", el).forEach(b => b.onclick = () => orderDetail(orders.find(o => o.id === b.dataset.see)));
   $$("[data-adv]", el).forEach(b => b.onclick = () => { const o = orders.find(x => x.id === b.dataset.adv);
     if (o.status === "novo") return enqueueOrder(o.id, { sound: false });
+    if (nextStatus(o)[0] === "entregue" && o.payment_status === "pendente") return paySheet(o, { thenStatus: "entregue" });
     busy(b, async () => { await API.setStatus(o.id, nextStatus(o)[0]); AD.newIds.delete(o.id); renderView(); refreshNav(); }); });
   $("#o-sim") && ($("#o-sim").onclick = async () => { const ps = (await API.products()).filter(p => p.is_active && (!p.track_stock || p.stock > 3) && !p.is_combo);
     const pick = ps.sort(() => Math.random() - .5).slice(0, 2); const names = ["Fernanda", "Gustavo", "Paula", "Diego", "Renata"];
@@ -484,6 +537,7 @@ function orderDetail(o) {
       <button class="btn ghost" id="od-cancel" style="color:var(--bad)">Cancelar pedido</button></div>` : ""}`);
   const after = () => { sh.close(); renderView(); refreshNav(); };
   $("#od-next", sh.el) && ($("#od-next", sh.el).onclick = e => { if (o.status === "novo") { sh.close(); return enqueueOrder(o.id, { sound: false }); }
+    if (nx[0] === "entregue" && o.payment_status === "pendente") { sh.close(); return paySheet(o, { thenStatus: "entregue" }); }
     busy(e.currentTarget, async () => { await API.setStatus(o.id, nx[0]); AD.newIds.delete(o.id); after(); }); });
   $("#od-print", sh.el) && ($("#od-print", sh.el).onclick = () => printReceipt(o));
   $("#od-view", sh.el) && ($("#od-view", sh.el).onclick = () => previewReceipt(o));
@@ -663,10 +717,11 @@ async function vProdutos(el) {
           <button class="btn sm ghost" data-ed="${p.id}">Editar</button></div></div></article>`).join("")
       : `<div class="card empty-row" style="grid-column:1/-1">Nenhum produto aqui. Toque em Novo produto para cadastrar.</div>`;
     const g = $("#pr-grid"), find = id => all.find(p => p.id === id);
-    $$("[data-su]", g).forEach(b => b.onclick = () => set(b.dataset.su, find(b.dataset.su).stock + 1));
-    $$("[data-sd]", g).forEach(b => b.onclick = () => set(b.dataset.sd, find(b.dataset.sd).stock - 1));
+    const bump = async (id, d) => { try { const v = await API.adjustStock(id, d); const el2 = $(`[data-sv="${id}"]`, g); if (el2) el2.textContent = v; const pr = find(id); if (pr) pr.stock = v; } catch (e) { toast(errMsg(e), true); } };
+    $$("[data-su]", g).forEach(b => b.onclick = () => bump(b.dataset.su, 1));
+    $$("[data-sd]", g).forEach(b => b.onclick = () => bump(b.dataset.sd, -1));
     $$("[data-sv]", g).forEach(b => b.onclick = () => amountStock(find(b.dataset.sv), set));
-    $$("[data-av]", g).forEach(b => b.onchange = async () => { try { await API.saveProduct({ ...find(b.dataset.av), is_active: b.checked }); toast(b.checked ? "Produto visível no app" : "Produto escondido do app"); } catch (e) { b.checked = !b.checked; toast(errMsg(e), true); } });
+    $$("[data-av]", g).forEach(b => b.onchange = async () => { try { await API.saveProduct({ id: b.dataset.av, is_active: b.checked }); toast(b.checked ? "Produto visível no app" : "Produto escondido do app"); } catch (e) { b.checked = !b.checked; toast(errMsg(e), true); } });
     $$("[data-ed]", g).forEach(b => b.onclick = () => productForm(find(b.dataset.ed), cats)); };
   $$("[data-pc]", el).forEach(b => b.onclick = () => { AD.pc = b.dataset.pc; $$("[data-pc]", el).forEach(x => x.setAttribute("aria-pressed", x === b)); draw(); });
   $("#pr-q").oninput = e => { AD.pq = e.target.value; draw(); };
@@ -722,7 +777,7 @@ function productForm(p, cats) {
     const price = parseMoney($("#pf-price", f).value);
     await API.saveProduct({ id: p.id, code: $("#pf-code", f).value.trim() || null, name: $("#pf-name", f).value.trim(), description: $("#pf-desc", f).value.trim() || null, price, cost: parseMoney($("#pf-cost", f).value),
       category_id: $("#pf-cat", f).value || null, unit_label: $("#pf-unit", f).value.trim() || "unidade", is_combo: $("#pf-combo", f).checked, combo_items: $("#pf-items", f).value.trim() || null,
-      track_stock: $("#pf-track", f).checked, stock: Number($("#pf-stock", f).value || 0), low_stock_alert: Number($("#pf-alert", f).value || 0),
+      track_stock: $("#pf-track", f).checked, ...(isNew || Number($("#pf-stock", f).value || 0) !== Number(p.stock) ? { stock: Number($("#pf-stock", f).value || 0) } : {}), low_stock_alert: Number($("#pf-alert", f).value || 0),
       is_featured: $("#pf-feat", f).checked, is_active: $("#pf-active", f).checked, image_url: img, sort: p.sort || 0 });
     toast("Produto salvo. Já aparece no app."); sh.close(); if (AD.view === "produtos") renderView(); }); };
 }
@@ -734,7 +789,7 @@ async function vStories(el) {
   el.innerHTML = head("Stories", "Fotos e vídeos curtos que aparecem no topo do app do cliente") + `<div class="st-grid">
     <div class="card"><div class="card-h"><h3>${ICON.story}Novo story</h3></div>
       <div class="phone" id="st-prev"><span class="pbars"><i></i></span><div class="pempty">A pré-visualização aparece aqui</div></div>
-      <label class="drop"><input id="st-file" type="file" accept="image/*,video/mp4,video/webm,video/quicktime">Escolher foto ou vídeo<br><span class="faint" style="font-size:.8rem">Vídeo de até 15 segundos, em pé</span></label>
+      <label class="drop"><input id="st-file" type="file" accept="image/*,video/mp4,video/webm,video/quicktime">Escolher foto ou vídeo<br><span class="faint" style="font-size:.8rem">Vídeo de até 15 segundos e 15 MB, em pé</span></label>
       <div class="field"><label for="st-cap">Legenda</label><input class="input" id="st-cap" maxlength="80" placeholder="Ex.: Coxinha saindo agora às 16h"></div>
       <div class="field"><label for="st-h">Fica no ar por</label><select class="input" id="st-h"><option value="6">6 horas</option><option value="12">12 horas</option><option value="24" selected>24 horas</option><option value="48">2 dias</option></select></div>
       ${AD.s?.wa_story_ask !== false ? `<label class="optin"><input type="checkbox" id="st-wa"><span>Também avisar os clientes no WhatsApp com esta imagem</span></label>` : ""}
@@ -745,7 +800,13 @@ async function vStories(el) {
   let file;
   const prev = () => { const p = $("#st-prev"); const cap = esc($("#st-cap").value);
     p.innerHTML = `<span class="pbars"><i></i></span>${file ? (file.type.startsWith("video") ? `<video src="${URL.createObjectURL(file)}" autoplay muted loop playsinline></video>` : `<img src="${URL.createObjectURL(file)}" alt="">`) : `<div class="pempty">A pré-visualização aparece aqui</div>`}${cap ? `<div class="pcap">${cap}</div>` : ""}`; };
-  $("#st-file").onchange = e => { file = e.target.files[0]; if (file && file.type.startsWith("video") && file.size > 25e6) { toast("Vídeo muito grande. Use um de até 25 MB.", true); file = null; } prev(); };
+  $("#st-file").onchange = async e => { file = e.target.files[0];
+    if (file && file.type.startsWith("video")) {
+      // vídeo curto e leve: economiza o espaço e o tráfego do plano grátis
+      if (file.size > 15e6) { toast("Vídeo muito pesado. Use um de até 15 MB (grave em 720p).", true); file = null; e.target.value = ""; }
+      else { const dur = await new Promise(r => { const v = document.createElement("video"); v.preload = "metadata"; v.onloadedmetadata = () => r(v.duration); v.onerror = () => r(0); v.src = URL.createObjectURL(file); });
+        if (dur > 20) { toast(`Vídeo com ${Math.round(dur)} segundos. Use um de até 15 segundos.`, true); file = null; e.target.value = ""; } } }
+    prev(); };
   $("#st-cap").oninput = prev;
   $("#st-go").onclick = e => busy(e.currentTarget, async () => { if (!file) { toast("Escolha uma foto ou vídeo.", true); return; }
     const isVid = file.type.startsWith("video");
@@ -769,13 +830,16 @@ async function vAjustes(el) {
   const C = AD.cfg;
   const f = (k, label, attrs = "", fmt) => `<div class="field"><label for="aj-${k}">${label}</label><input class="input" id="aj-${k}" data-k="${k}" ${fmt ? `data-m="1"` : ""} value="${esc(fmt ? moneyInput(C[k]) : C[k] ?? "")}" ${attrs}></div>`;
   const sw = (k, label, sub = "") => `<label class="switch"><span><b>${label}</b>${sub ? `<br><span class="faint" style="font-size:.85rem">${sub}</span>` : ""}</span><input type="checkbox" data-k="${k}" ${C[k] ? "checked" : ""}></label>`;
-  const clientUrl = location.href.split("#")[0];
+  const clientUrl = CLIENT_URL();
   const draw = () => {
     const b = $("#aj-body");
     b.innerHTML = {
       loja: `<div class="card-h"><h3>Loja</h3></div><div class="grid2">${f("store_name", "Nome")}${f("whatsapp", "WhatsApp da loja", 'inputmode="tel" placeholder="(00) 00000-0000"')}</div>${f("tagline", "Frase da loja")}
         <div class="grid2">${f("opening_hours", "Horário de funcionamento (texto do app)")}${f("prep_minutes", "Tempo de preparo (min)", 'type="number" min="5"')}</div>
-        ${sw("is_open", "Loja aberta para pedidos", "Desligue para pausar o app")}${f("pause_message", "Mensagem quando estiver fechada")}`,
+        ${sw("is_open", "Loja aberta para pedidos", "Desligue para pausar o app")}${f("pause_message", "Mensagem quando estiver fechada")}
+        <hr class="hr"><div class="card-h"><h3>Mesas</h3></div>
+        <div class="grid2">${f("table_count", "Quantas mesas a loja tem", 'type="number" min="0" max="99"')}<div></div></div>
+        <p class="faint" style="font-size:.85rem">Na nova venda você escolhe a mesa. Contas abertas aparecem em Vendas › Aguardando pagamento. Coloque 0 se não atende em mesas.</p>`,
       entrega: `<div class="card-h"><h3>Endereço de saída</h3></div><p class="muted" style="font-size:.9rem">O frete é calculado a partir deste ponto. Digite o endereço completo com cidade e toque em Localizar.</p>
         ${f("address", "Endereço completo")}<div class="row"><button class="btn" id="aj-geo" type="button">Localizar no mapa</button><span id="aj-geo-r" class="faint" style="font-size:.85rem">${C.lat != null ? `Localizado: ${Number(C.lat).toFixed(5)}, ${Number(C.lng).toFixed(5)}` : "Ainda não localizado: entregas ficam desligadas até localizar."}</span></div>
         <div class="grid2">${f("lat", "Latitude", 'inputmode="decimal"')}${f("lng", "Longitude", 'inputmode="decimal"')}</div><hr class="hr">
@@ -819,12 +883,29 @@ async function vAjustes(el) {
           <p class="faint" style="font-size:.82rem">A Meta cobra por mensagem entregue (marketing custa mais que utilidade) e só permite promoção para quem aceitou receber.</p>`}`,
       divulgar: `<div class="card-h"><h3>Link do app para os clientes</h3></div><p class="muted">Coloque no perfil do WhatsApp Business, no Instagram e no Google Meu Negócio. No celular, o cliente pode adicionar o app à tela inicial.</p>
         <code style="word-break:break-all;user-select:all;background:var(--surface-2);padding:12px;border-radius:12px">${esc(clientUrl)}</code><button class="btn" id="aj-copy" type="button">Copiar link</button>`,
-      conta: `<div class="card-h"><h3>Conta</h3></div><p>${esc(AD.user?.email || "")}</p><p class="faint">${API.mode === "demo" ? "Modo demonstração: as mudanças não são salvas no banco." : "Conectado ao banco de dados da loja."}</p>`
+      conta: `<div class="card-h"><h3>Acesso ao painel</h3></div><p class="muted">Você entra com <b>${esc(AD.user?.email || "")}</b>.</p>
+        <div class="field"><label for="ac-mail">Vincular o seu e-mail profissional</label><div class="row" style="flex-wrap:nowrap"><input class="input" id="ac-mail" type="email" placeholder="voce@seunegocio.com.br" style="flex:1"><button class="btn" type="button" id="ac-mail-go">Vincular</button></div>
+          <span class="faint" style="font-size:.8rem">Chega um link de confirmação no e-mail novo. Depois de confirmar, você passa a entrar com ele (e pode recuperar a senha por ele).</span></div>
+        <hr class="hr"><div class="grid2"><div class="field"><label for="ac-p1">Nova senha</label><input class="input" id="ac-p1" type="password" autocomplete="new-password" minlength="8"></div>
+          <div class="field"><label for="ac-p2">Repita a nova senha</label><input class="input" id="ac-p2" type="password" autocomplete="new-password"></div></div>
+        <button class="btn" type="button" id="ac-pass-go" style="align-self:flex-start">Trocar senha</button>
+        <p class="faint" style="font-size:.85rem">${API.mode === "demo" ? "Modo demonstração: nada disso é salvo." : "Conectado ao banco de dados da loja."}</p>
+        <hr class="hr"><div class="card-h"><h3>Saúde do sistema</h3></div>
+        ${(() => { const y = AD.sys || {}, ago = t => t ? fmtDT(t) : "ainda não rodou", ok = (t, d) => t && Date.now() - new Date(t) < d * 864e5;
+          const row = (l, t, d, help) => `<div class="calc-row"><span>${l}<br><span class="faint" style="font-size:.8rem">${help}</span></span><b style="color:var(${ok(t, d) ? "--ok, #3fb950" : "--danger, #f85149"})">${ago(t)}</b></div>`;
+          return row("Vigia automático", y.last_ping, 2, "Acessa o banco 1 vez por dia para o plano grátis nunca pausar") +
+            row("Último backup", y.last_backup, 9, "Cópia criptografada toda semana no GitHub") +
+            `<p class="faint" style="font-size:.8rem">Stories vencidos há mais de 2 dias são apagados sozinhos para economizar espaço.</p>`; })()}`
     }[AD.stab];
     $$("[data-k]", b).forEach(i => i.oninput = i.onchange = () => { const k = i.dataset.k; C[k] = i.type === "checkbox" ? i.checked : i.dataset.m ? (i.value.trim() === "" ? null : parseMoney(i.value)) : i.value; sim(); });
     const sim = () => { const box = $("#aj-sim", b); if (!box) return; const t = { delivery_base_fee: Number(C.delivery_base_fee || 0), delivery_included_km: Number(String(C.delivery_included_km).replace(",", ".")) || 0, delivery_per_km: Number(C.delivery_per_km || 0), delivery_max_km: Number(String(C.delivery_max_km).replace(",", ".")) || 0, free_delivery_over: null };
       box.innerHTML = [1, 3, 5, 8, 12].map(k => { const r = calcFee(t, k, 0); return `<div class="calc-row"><span>${k} km</span><b class="num">${r.ok ? money(r.fee) : "fora da área"}</b></div>`; }).join(""); };
     sim();
+    $("#ac-mail-go", b) && ($("#ac-mail-go", b).onclick = e => busy(e.currentTarget, async () => { const m = $("#ac-mail", b).value.trim();
+      if (!/^\S+@\S+\.\S+$/.test(m)) return toast("Digite um e-mail válido.", true); await API.changeEmail(m); toast("Enviamos um link de confirmação para " + m); }));
+    $("#ac-pass-go", b) && ($("#ac-pass-go", b).onclick = e => busy(e.currentTarget, async () => { const a = $("#ac-p1", b).value, c = $("#ac-p2", b).value;
+      if (a.length < 8) return toast("A senha precisa ter pelo menos 8 caracteres.", true); if (a !== c) return toast("As duas senhas não são iguais.", true);
+      await API.changePassword(a); $("#ac-p1", b).value = $("#ac-p2", b).value = ""; toast("Senha trocada"); }));
     $$("[data-wm]", b).forEach(x => x.onclick = () => { C.wa_mode = x.dataset.wm; draw(); });
     $("#aj-play", b) && ($("#aj-play", b).onclick = () => playAlert(C.alert_sound, C.alert_volume));
     $("#aj-vol", b) && ($("#aj-vol", b).oninput = e => { C.alert_volume = Number(e.target.value); });
@@ -843,7 +924,7 @@ async function vAjustes(el) {
   $("#aj-save").onclick = e => busy(e.currentTarget, async () => {
     const num = v => v === "" || v == null ? null : Number(String(v).replace(",", "."));
     const { id, updated_at, ...patch } = C;
-    Object.assign(patch, { receipt_width: Number(C.receipt_width) || 80, receipt_copies: Number(C.receipt_copies) || 1, alert_volume: Number(C.alert_volume ?? .8), lat: num(C.lat), lng: num(C.lng), prep_minutes: Number(C.prep_minutes) || 30, delivery_included_km: num(C.delivery_included_km) ?? 0, delivery_max_km: num(C.delivery_max_km) ?? 10,
+    Object.assign(patch, { table_count: Math.max(0, Math.min(99, parseInt(C.table_count) || 0)), receipt_width: Number(C.receipt_width) || 80, receipt_copies: Number(C.receipt_copies) || 1, alert_volume: Number(C.alert_volume ?? .8), lat: num(C.lat), lng: num(C.lng), prep_minutes: Number(C.prep_minutes) || 30, delivery_included_km: num(C.delivery_included_km) ?? 0, delivery_max_km: num(C.delivery_max_km) ?? 10,
       delivery_base_fee: C.delivery_base_fee ?? 0, delivery_per_km: C.delivery_per_km ?? 0, delivery_min_order: C.delivery_min_order ?? 0, payment_provider: C.mp_public_key ? "mercadopago" : "none" });
     AD.s = await API.saveSettings(patch); toast("Configurações salvas. O app do cliente já foi atualizado."); renderView(); });
   draw();
@@ -886,10 +967,10 @@ function color_mix(hex, a) { const m = hex.replace("#", ""); if (m.length !== 6)
 const barList = (rows, fmt = money) => { const max = Math.max(1, ...rows.map(r => r[1]));
   return rows.length ? `<div class="bar-list">${rows.map(([n, v, extra]) => `<div class="bar-row"><span class="nm" title="${esc(n)}">${esc(n)}</span><span class="track"><span class="fill" style="width:${(v / max * 100).toFixed(1)}%"></span></span><span class="num" style="font-weight:600">${fmt(v)}${extra ? `<span class="faint" style="font-weight:400"> · ${extra}</span>` : ""}</span></div>`).join("")}</div>`
     : `<p class="muted">Sem dados no período.</p>`; };
-async function paySheet(o) {
+async function paySheet(o, { thenStatus } = {}) {
   let method = o.payment_method === "fiado" ? "dinheiro" : o.payment_method, cust = null;
   const custs = await API.customers();
-  const sh = openSheet(`<div class="sheet-head"><h2>Receber #${o.code}</h2><button class="btn icon ghost" data-close aria-label="Fechar">✕</button></div>
+  const sh = openSheet(`<div class="sheet-head"><div><h2>Receber pedido nº ${o.code}</h2>${thenStatus ? `<p class="faint" style="margin-top:2px">Registre o pagamento para concluir. Assim o caixa e os relatórios batem.</p>` : ""}</div><button class="btn icon ghost" data-close aria-label="Fechar">✕</button></div>
     <div class="num" style="font-size:2rem;font-weight:800;font-family:var(--f-display)">${money(o.total)}</div>
     <div class="grid2" id="ps-m"></div><div id="ps-extra"></div>
     <button class="btn primary block" id="ps-go">Confirmar recebimento</button>`);
@@ -905,7 +986,9 @@ async function paySheet(o) {
   draw();
   $("#ps-go", el).onclick = e => busy(e.currentTarget, async () => {
     if (method === "fiado" && !cust && !o.customer_id) { toast("Escolha o cliente do fiado.", true); return; }
-    await API.payOrder(o.id, method, cust?.id); toast("Pagamento registrado"); sh.close(); renderView();
+    await API.payOrder(o.id, method, cust?.id);
+    if (thenStatus) await API.setStatus(o.id, thenStatus);
+    toast(thenStatus ? "Pagamento registrado e pedido concluído" : "Pagamento registrado"); sh.close(); renderView(); refreshNav();
   });
 }
 function customerPicker(custs, _cb, preId) {
@@ -967,7 +1050,8 @@ function amountStock(p, set) {
     <div class="grid2"><div class="field"><label for="st-v">Quantidade disponível</label><input class="input num" id="st-v" type="number" min="0" value="${p.stock}" style="font-size:1.3rem"></div>
     <div class="field"><label for="st-add">Ou somar fornada</label><input class="input num" id="st-add" type="number" min="0" placeholder="Ex.: 50"></div></div>
     <button class="btn primary block" id="st-go">Salvar</button>`);
-  $("#st-go", sh.el).onclick = async () => { const add = Number($("#st-add", sh.el).value || 0); await set(p.id, add ? p.stock + add : Number($("#st-v", sh.el).value)); sh.close(); toast("Estoque atualizado"); };
+  $("#st-go", sh.el).onclick = async () => { const add = Number($("#st-add", sh.el).value || 0);
+    try { if (add) { await API.adjustStock(p.id, add); if (AD.view === "produtos") renderView(); } else await set(p.id, Number($("#st-v", sh.el).value)); sh.close(); toast("Estoque atualizado"); } catch (e) { toast(errMsg(e), true); } };
 }
 function shrinkImage(file, max) {
   return new Promise(res => { const im = new Image(); const url = URL.createObjectURL(file);

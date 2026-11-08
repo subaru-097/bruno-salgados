@@ -1,11 +1,12 @@
 /* ================= roteamento ================= */
 async function route() {
-  const isAdmin = location.hash.startsWith("#admin");
+  const isAdmin = window.BS_APP === "admin" || (window.BS_APP !== "client" && location.hash.startsWith("#admin"));
   if (isAdmin) await startAdmin(); else await startClient();
 }
+const CLIENT_URL = () => window.BS_APP === "admin" ? location.origin + "/" : location.href.split("#")[0];
 (async function boot() {
-  await initApi();
-  if (API.mode === "demo") {
+  try { await initApi(); } catch { return; }
+  if (API.mode === "demo" && !window.BS_APP) {
     const bar = $("#demo-bar"); bar.hidden = false;
     const small = matchMedia("(max-width:600px)").matches;
     bar.innerHTML = `<span>${small ? "Apresentação · dados de exemplo" : "Versão de apresentação com dados de exemplo"}</span>

@@ -1,0 +1,46 @@
+# Backup semanal do banco (o plano grátis do Supabase não guarda cópias).
+# Gera um arquivo criptografado e guarda no ramo "backups" deste repositório.
+# Mantém os 8 mais recentes (2 meses). Precisa de 2 segredos no GitHub:
+#   SUPABASE_DB_URL  -> Supabase › Connect › Session pooler (a URI com a senha do banco)
+#   BACKUP_SENHA     -> uma senha só sua para abrir os backups (guarde bem!)
+name: Backup semanal
+on:
+  schedule:
+    - cron: "41 6 * * 1"    # toda segunda às 03:41 de Brasília
+  workflow_dispatch: {}
+permissions:
+  contents: write
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Conferir segredos
+        env: { DB: "${{ secrets.SUPABASE_DB_URL }}", PW: "${{ secrets.BACKUP_SENHA }}" }
+        run: |
+          if [ -z "$DB" ] || [ -z "$PW" ]; then echo "::error::Faltam os segredos SUPABASE_DB_URL e BACKUP_SENHA (veja o MIGRACAO.md)."; exit 1; fi
+      - name: Instalar pg_dump 17
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSo /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client-17
+      - name: Gerar backup criptografado
+        env: { DB: "${{ secrets.SUPABASE_DB_URL }}", PW: "${{ secrets.BACKUP_SENHA }}" }
+        run: |
+          F=backup-$(date -u +%Y-%m-%d).sql.gz.gpg
+          /usr/lib/postgresql/17/bin/pg_dump "$DB" --data-only --schema=public --exclude-table=public.admins --no-owner --no-privileges \
+            | gzip -9 | gpg --batch --yes --pinentry-mode loopback --passphrase "$PW" --symmetric --cipher-algo AES256 -o "$RUNNER_TEMP/$F"
+          test -s "$RUNNER_TEMP/$F"
+          echo "F=$F" >> "$GITHUB_ENV"
+          /usr/lib/postgresql/17/bin/psql "$DB" -qc "update public.system_status set last_backup = now() where id = 1"
+      - name: Guardar no ramo backups
+        run: |
+          git init -q bk && cd bk
+          git config user.name "backup-bot"; git config user.email "backup-bot@users.noreply.github.com"
+          git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+          if git fetch -q --depth 1 origin backups; then git checkout -q -b backups FETCH_HEAD; else git checkout -q --orphan backups; fi
+          cp "$RUNNER_TEMP/$F" .
+          ls -1 backup-*.gpg | sort -r | tail -n +9 | xargs -r git rm -q
+          git add -A && git commit -qm "Backup $F [skip ci]" && git push -q origin backups
+          echo "Backup salvo: $F"

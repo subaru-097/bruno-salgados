@@ -5,7 +5,7 @@ ICON.wa = '<svg class="svg-i" viewBox="0 0 24 24" fill="currentColor"><path d="M
 const firstName = n => { const w = String(n || "").trim().split(/\s+/); return /^(seu|sr\.?|dona|d\.|dr\.?|dra\.?)$/i.test(w[0]) && w[1] ? w[0] + " " + w[1] : w[0]; };
 const fillMsg = (tpl, v) => String(tpl || "").replace(/\{(\w+)\}/g, (m, k) => v[k] ?? m);
 const phoneKey = p => onlyDigits(p).slice(-9);
-const appLink = () => location.href.split("#")[0];
+const appLink = () => CLIENT_URL();
 
 /* junta clientes cadastrados e quem comprou pelo app (um contato por telefone) */
 async function loadContacts() {

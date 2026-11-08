@@ -1,0 +1,30 @@
+# Vigia do plano grátis do Supabase.
+# Roda todo dia e acessa o banco. Isso conta como uso, então o projeto nunca
+# chega a 7 dias parado (que é quando o plano grátis pausa).
+# Não precisa configurar nada: o endereço e a chave pública são lidos do src/data.js.
+name: Manter ativo
+on:
+  schedule:
+    - cron: "17 11 * * *"   # todo dia às 08:17 de Brasília
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Acessar o banco
+        run: |
+          URL=$(grep -oP 'SUPABASE_URL = "\K[^"]+' src/data.js)
+          KEY=$(grep -oP 'SUPABASE_KEY = "\K[^"]+' src/data.js)
+          for i in 1 2 3; do
+            R=$(curl -sS -m 30 -w '\n%{http_code}' -X POST "$URL/rest/v1/rpc/manter_ativo" \
+              -H "apikey: $KEY" -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" -d '{}') || true
+            CODE=$(echo "$R" | tail -1); echo "$R" | head -1
+            [ "$CODE" = "200" ] && exit 0
+            echo "Tentativa $i falhou ($CODE). Esperando 60 s..."; sleep 60
+          done
+          echo "::error::Não consegui acessar o Supabase. Se o projeto estiver pausado, abra o painel do Supabase e clique em Restore."
+          exit 1

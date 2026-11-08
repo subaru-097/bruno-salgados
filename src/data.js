@@ -42,6 +42,11 @@ const ERR = {
   SOMENTE_ADMIN: "Entre como dono para fazer isso.",
   PAGAMENTO_INVALIDO: "Essa forma de pagamento não está disponível.",
   QUANTIDADE_INVALIDA: "Quantidade inválida.",
+  PEDIDO_NAO_ENCONTRADO: "Pedido não encontrado.",
+  ENTREGA_INVALIDA: "Escolha entrega ou retirada.",
+  TELEFONE_INVALIDO: "Informe um WhatsApp com DDD para avisarmos sobre o pedido.",
+  MUITOS_PEDIDOS: "Você já enviou vários pedidos agora há pouco. Aguarde a loja confirmar ou fale com a gente no WhatsApp.",
+  SEM_CONEXAO: "Sem conexão com o servidor da loja.",
   WHATSAPP_NAO_CONFIGURADO: "O envio automático ainda não foi ligado. Configure a API oficial do WhatsApp em Configurações › WhatsApp.",
   MODELO_OBRIGATORIO: "Informe o nome do modelo de mensagem aprovado pela Meta em Configurações › WhatsApp.",
   PAGAMENTO_NAO_FECHA: "A soma dos pagamentos não bate com o total da venda."
@@ -94,6 +99,9 @@ function haversine(a, b, c, d) {
 function makeSupabaseApi(sb) {
   const q = async p => { const { data, error } = await p; if (error) throw error; return data; };
   const rpc = (fn, args) => q(sb.rpc(fn, args));
+  const removeMedia = async urls => { const mark = "/storage/v1/object/public/media/";
+    const paths = urls.filter(u => u && u.includes(mark)).map(u => decodeURIComponent(u.split(mark)[1].split("?")[0]));
+    if (paths.length) { try { await sb.storage.from("media").remove(paths); } catch {} } };
   async function all(build) {
     let out = [], from = 0, step = 1000;
     for (;;) { const rows = await q(build().range(from, from + step - 1)); out = out.concat(rows); if (rows.length < step) break; from += step; }
@@ -110,10 +118,16 @@ function makeSupabaseApi(sb) {
     saveProduct: p => { const { id, created_at, ...rest } = p; rest.updated_at = new Date().toISOString(); if (!rest.code) delete rest.code;
       return id ? q(sb.from("products").update(rest).eq("id", id)) : q(sb.from("products").insert(rest)); },
     deleteProduct: id => q(sb.from("products").delete().eq("id", id)),
+    adjustStock: (id, delta) => rpc("adjust_stock", { p_product: id, p_delta: delta }),
     setStock: (id, stock) => q(sb.from("products").update({ stock, updated_at: new Date().toISOString() }).eq("id", id)),
     stories: () => q(sb.from("stories").select("*").order("created_at", { ascending: false })),
     addStory: s => q(sb.from("stories").insert({ image_url: s.image_url, caption: s.caption, media_type: s.media_type || "image", expires_at: new Date(Date.now() + (s.hours || 24) * 36e5).toISOString() })),
-    deleteStory: id => q(sb.from("stories").delete().eq("id", id)),
+    async deleteStory(id) { const st = await q(sb.from("stories").select("image_url").eq("id", id).maybeSingle());
+      await q(sb.from("stories").delete().eq("id", id)); await removeMedia([st?.image_url]); },
+    // apaga do armazenamento os stories vencidos há mais de 2 dias (o plano grátis tem 1 GB)
+    async cleanupStories() { const old = await q(sb.from("stories").select("id,image_url").lt("expires_at", new Date(Date.now() - 2 * 864e5).toISOString()));
+      if (!old.length) return 0; await removeMedia(old.map(s => s.image_url)); await q(sb.from("stories").delete().in("id", old.map(s => s.id))); return old.length; },
+    systemStatus: () => q(sb.from("system_status").select("*").eq("id", 1).maybeSingle()),
     async upload(file) {
       const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
       const path = `${new Date().getFullYear()}/${uid()}.${ext}`;
@@ -133,6 +147,11 @@ function makeSupabaseApi(sb) {
       if (from) b = b.gte("created_at", from.toISOString()); if (to) b = b.lt("created_at", to.toISOString()); return b; }),
     order: id => q(sb.from("orders").select("*, order_items(*)").eq("id", id).single()),
     setStatus: (id, s) => rpc("set_order_status", { p_order: id, p_status: s }),
+    updateOrder: (id, patch) => q(sb.from("orders").update({ ...patch, updated_at: new Date().toISOString() }).eq("id", id)),
+    setOrderItems: (id, items) => rpc("set_order_items", { p_order: id, p_items: items }),
+    payOrderSplit: (id, pays, cid) => rpc("pay_order_split", { p_order: id, p_payments: pays, p_customer: cid || null }),
+    async changeEmail(email) { const { error } = await sb.auth.updateUser({ email }); if (error) throw error; },
+    async changePassword(password) { const { error } = await sb.auth.updateUser({ password }); if (error) throw error; },
     payOrder: (id, method, customerId) => rpc("pay_order", { p_order: id, p_method: method, p_customer: customerId || null }),
     customers: () => q(sb.from("customer_balances").select("*").order("name")),
     saveCustomer: c => { const { id, balance, last_movement, created_at, ...rest } = c;
@@ -180,7 +199,7 @@ function makeDemoApi() {
   const S = {
     settings: { id: 1, store_name: "Bruno Salgados", tagline: "Salgados fresquinhos, feitos na hora", whatsapp: "", address: "Rua Edna Antônio Bacete, 1508",
       lat: -23.0, lng: -47.0, is_open: true, pause_message: "Estamos fechados no momento. Volte logo!", opening_hours: "Seg a Sáb · 9h às 20h",
-      delivery_enabled: true, pickup_enabled: true, delivery_base_fee: 5, delivery_included_km: 2, delivery_per_km: 1.5, delivery_max_km: 10,
+      delivery_enabled: true, pickup_enabled: true, delivery_base_fee: 7.8, delivery_included_km: 3, delivery_per_km: 1.5, table_count: 6, delivery_max_km: 10,
       delivery_min_order: 0, free_delivery_over: null, prep_minutes: 30, pix_key: "brunosalgados@exemplo.com", pix_name: "Bruno Salgados",
       accept_cash: true, accept_card_on_delivery: true, accept_pix: true, payment_provider: "none", mp_public_key: "", mp_enabled: false,
       wa_mode: "manual", wa_phone_id: "", wa_promo_template: "", wa_debt_template: "", wa_story_ask: true,
@@ -278,6 +297,12 @@ function makeDemoApi() {
   mk("Rafael", "entrega", [[0, 6], [2, 2]], "preparando", 18, "dinheiro");
   mk("Bia Souza", "entrega", [[6, 1]], "novo", 4, "pix");
   mk("Lucas", "retirada", [[4, 3], [9, 1]], "novo", 2, "cartao_debito");
+  // contas abertas nas mesas
+  [[2, [[0, 4], [8, 2]], 35], [5, [[1, 3], [2, 3], [9, 2]], 12]].forEach(([mesa, items, mins]) => {
+    const its = items.map(([i, q]) => { const p = S.products[i]; return { id: uid(), product_id: p.id, name: p.name, unit_price: p.price, unit_cost: p.cost, qty: q, total: p.price * q }; });
+    const sub = its.reduce((a, b) => a + b.total, 0), t = new Date(now - mins * 6e4).toISOString();
+    S.orders.push({ id: uid(), code: S.code++, channel: "balcao", table_no: mesa, customer_id: null, customer_name: "Mesa " + mesa, fulfillment: "balcao", subtotal: sub, delivery_fee: 0, discount: 0, total: sub,
+      payment_method: "dinheiro", payment_status: "pendente", status: "preparando", created_at: t, updated_at: t, order_items: its }); });
 
   function expected(s) {
     const ms = S.movements.filter(m => m.session_id === s.id && m.method === "dinheiro");
@@ -323,10 +348,13 @@ function makeDemoApi() {
       if (!p.code) p.code = String(S.products.length + 1).padStart(3, "0");
       if (p.id) Object.assign(S.products.find(x => x.id === p.id), p); else S.products.push({ ...p, id: uid() }); tick("products"); },
     async deleteProduct(id) { S.products = S.products.filter(x => x.id !== id); tick("products"); },
+    async adjustStock(id, d) { const p = S.products.find(x => x.id === id); p.stock = Math.max(0, p.stock + d); tick("products"); return p.stock; },
     async setStock(id, stock) { S.products.find(x => x.id === id).stock = stock; tick("products"); },
     async stories() { return clone(S.stories); },
     async addStory(s) { S.stories.unshift({ id: uid(), image_url: s.image_url, caption: s.caption, media_type: s.media_type || "image", created_at: new Date().toISOString(), expires_at: new Date(Date.now() + (s.hours || 24) * 36e5).toISOString() }); tick("stories"); },
     async deleteStory(id) { S.stories = S.stories.filter(s => s.id !== id); tick("stories"); },
+    async cleanupStories() { const lim = Date.now() - 2 * 864e5, n = S.stories.length; S.stories = S.stories.filter(s => new Date(s.expires_at) >= lim); return n - S.stories.length; },
+    systemStatus: async () => ({ id: 1, last_ping: new Date(Date.now() - 3 * 36e5).toISOString(), last_backup: new Date(Date.now() - 2 * 864e5).toISOString(), ping_count: 12, idle_days: 0 }),
     upload: file => file.type.startsWith("video") ? Promise.resolve(URL.createObjectURL(file)) : new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); }),
     async quote(lat, lng, routeKm, subtotal) {
       if (!S.settings.delivery_enabled) return { ok: false, reason: "ENTREGA_DESATIVADA" };
@@ -360,6 +388,15 @@ function makeDemoApi() {
       return { id: o.id, code: o.code, subtotal: sub, delivery_fee: fee, total: o.total };
     },
     async order(id) { return clone(S.orders.find(x => x.id === id)); },
+    async updateOrder(id, patch) { Object.assign(S.orders.find(x => x.id === id), patch); tick("orders"); },
+    async setOrderItems(id, items) { const o = S.orders.find(x => x.id === id); if (o.payment_status !== "pendente") fail("PEDIDO_JA_PAGO");
+      o.order_items.forEach(i => { const p = S.products.find(x => x.id === i.product_id); if (p?.track_stock) p.stock += i.qty; });
+      for (const it of items) { const p = S.products.find(x => x.id === it.product_id); if (p.track_stock && p.stock < it.qty) { o.order_items.forEach(i => { const q = S.products.find(x => x.id === i.product_id); if (q?.track_stock) q.stock -= i.qty; }); fail(`SEM_ESTOQUE:${p.name}:${p.stock}`); } }
+      o.order_items = items.map(it => { const p = S.products.find(x => x.id === it.product_id); if (p.track_stock) p.stock -= it.qty; return { id: uid(), product_id: p.id, name: p.name, unit_price: p.price, unit_cost: p.cost, qty: it.qty, total: p.price * it.qty }; });
+      o.subtotal = o.order_items.reduce((a, b) => a + b.total, 0); o.total = Math.max(0, o.subtotal + Number(o.delivery_fee || 0) - Math.min(Number(o.discount || 0), o.subtotal)); tick("orders"); tick("products"); return { total: o.total }; },
+    async payOrderSplit(id, pays, cid) { paySplit(S.orders.find(x => x.id === id), pays, cid); tick("orders"); },
+    async changeEmail(email) { S.user.email = email; },
+    async changePassword() {},
     async setOptin(id, phone, v) { const o = S.orders.find(x => x.id === id); if (o) o.marketing_optin = v; },
     async logMessages(rows) { rows.forEach(r => S.log.unshift({ id: uid(), created_at: new Date().toISOString(), status: "enviado", ...r })); },
     async messageLog() { return clone(S.log); },
@@ -410,9 +447,15 @@ function makeDemoApi() {
 
 /* ================= inicialização ================= */
 let API;
-/* MODO_APRESENTACAO = true: usa dados de exemplo e o painel abre com um clique (sem e-mail/senha).
+/* MODO_APRESENTACAO = true: usa sempre dados de exemplo e o painel abre com um clique (sem e-mail/senha).
    Para ligar o banco de dados real e o login do dono, troque para false e publique de novo. */
-const MODO_APRESENTACAO = true;
+const MODO_APRESENTACAO = false;
+function offlineScreen() {
+  document.getElementById("app").innerHTML = `<div style="min-height:100vh;display:grid;place-items:center;padding:24px;text-align:center;font-family:Manrope,system-ui,sans-serif">
+    <div style="max-width:360px;display:flex;flex-direction:column;gap:12px;align-items:center"><h2 style="margin:0">Sem conexão</h2>
+    <p style="margin:0;opacity:.75">Não conseguimos falar com o servidor da loja. Confira sua internet e tente de novo.</p>
+    <button onclick="location.reload()" style="border:0;border-radius:999px;padding:12px 22px;font:inherit;font-weight:700;background:#FF941F;color:#1B0F05;cursor:pointer">Tentar de novo</button></div></div>`;
+}
 async function initApi() {
   if (!MODO_APRESENTACAO && window.supabase?.createClient) {
     try {
@@ -423,8 +466,10 @@ async function initApi() {
       API = makeSupabaseApi(sb);
       API.subscribeAll();
       return API;
-    } catch (e) { console.warn("Supabase indisponível, usando demonstração:", e); }
-  }
+    } catch (e) { console.warn("Supabase indisponível:", e);
+      // no site publicado nunca mostra dados de exemplo: avisa que está sem conexão
+      if (window.BS_APP) { offlineScreen(); throw new Error("SEM_CONEXAO"); } }
+  } else if (!MODO_APRESENTACAO && window.BS_APP) { offlineScreen(); throw new Error("SEM_CONEXAO"); }
   API = makeDemoApi();
   return API;
 }
