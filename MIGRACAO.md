@@ -42,6 +42,15 @@ npx supabase functions deploy whatsapp-send --project-ref SEU-PROJETO
 npx supabase secrets set WA_TOKEN=... WA_PHONE_ID=... --project-ref SEU-PROJETO
 ```
 
+## 6b. Pagamento online (Mercado Pago)
+1. Publique as funções: `npx supabase functions deploy mp-checkout --no-verify-jwt --project-ref SEU-PROJETO`
+   e `npx supabase functions deploy mp-webhook --no-verify-jwt --project-ref SEU-PROJETO`.
+2. Guarde o Access Token de produção no cofre (SQL Editor):
+   `select vault.create_secret('APP_USR-...', 'mp_access_token');`
+   (ou em Edge Functions › Secrets com o nome `MP_ACCESS_TOKEN`).
+3. No painel: **Configurações › Pagamentos**, cole a Public Key e ligue "Mostrar Pagar online no app".
+4. Se o domínio for diferente de `quiosdatata.online`, crie o segredo `SITE_URLS` com o endereço (ex.: `https://meudominio.com.br`).
+
 ## 7. Primeiro acesso na loja nova
 1. Abra `/admin` e entre com o e-mail e a senha do passo 4.
 2. **Configurações › Entrega e frete**: digite o endereço da loja e toque em **Localizar no mapa**, depois **Salvar**.

@@ -69,6 +69,8 @@ async function startAdmin() {
     AD.live = true;
     bus.on("orders", p => { if (!AD.user) return; const o = p?.new;
       if (p?.eventType === "INSERT" && o?.channel === "app" && o.status === "novo" && !AD.seen?.has(o.id)) { AD.seen?.add(o.id); AD.newIds.add(o.id); enqueueOrder(o.id); }
+      if (p?.eventType === "UPDATE" && o?.mp_paid_at && o.payment_status === "pago" && Date.now() - new Date(o.mp_paid_at) < 120e3 && !(AD.mpOk ||= new Set()).has(o.id)) {
+        AD.mpOk.add(o.id); toast(`Pagamento online confirmado · pedido #${o.code} (${money(o.total)})`); }
       refreshNav(); if (["inicio", "pedidos", "vendas"].includes(AD.view)) renderView(); });
     bus.on("cash", () => AD.user && AD.view === "caixa" && renderView());
     bus.on("products", debounce(() => AD.user && ["produtos", "inicio"].includes(AD.view) && renderView(), 400));
@@ -244,7 +246,8 @@ async function vInicio(el) {
 /* ================= VENDAS (balcão) ================= */
 const typeChip = o => { const k = o.fulfillment === "entrega" ? "ent" : o.fulfillment === "retirada" ? "ret" : "bal";
   return `<span class="tchip ${k}">${k === "ent" ? ICON.bolt : k === "ret" ? ICON.bag : ICON.pos}${kindOf(o)}</span>`; };
-const payText = o => o.payments?.length > 1 ? o.payments.map(x => METHOD_LABEL[x.method]).join(" + ") : METHOD_LABEL[o.payment_method];
+const payText = o => o.payments?.length > 1 ? o.payments.map(x => METHOD_LABEL[x.method]).join(" + ")
+  : METHOD_LABEL[o.payment_method] + (o.payment_method === "mercadopago" && o.payment_status === "pendente" && o.status !== "cancelado" ? " · aguardando pagamento online" : "");
 
 async function openTabs() {
   const os = await API.orders({ from: new Date(Date.now() - 3 * 864e5) });

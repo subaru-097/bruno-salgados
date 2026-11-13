@@ -47,7 +47,7 @@ function receiptHTML(o, s = AD.s || {}) {
     <div class="hr"></div>
     <div><b>Pagamento:</b></div>${parts.map(x => line(METHOD_LABEL[x.method] || x.method, money(x.amount))).join("")}
     ${o.change_for ? line("Troco para", money(o.change_for)) + line("Levar de troco", money(Math.max(0, o.change_for - o.total))) : ""}
-    <div class="c b" style="margin-top:4px">${{ pago: "PAGO", fiado: "LANÇADO NO FIADO", pendente: "A RECEBER NA ENTREGA/RETIRADA", estornado: "ESTORNADO" }[o.payment_status] || ""}</div>
+    <div class="c b" style="margin-top:4px">${(o.payment_method === "mercadopago" && o.payment_status === "pendente" ? "AGUARDANDO PAGAMENTO ONLINE" : { pago: "PAGO", fiado: "LANÇADO NO FIADO", pendente: "A RECEBER NA ENTREGA/RETIRADA", estornado: "ESTORNADO" }[o.payment_status]) || ""}</div>
     ${o.notes ? `<div class="hr"></div><div><b>Obs.:</b> ${esc(o.notes)}</div>` : ""}
     ${o.stock_alerts?.length ? `<div class="hr"></div><div class="b">ATENÇÃO ESTOQUE:</div>${o.stock_alerts.map(a => `<div>${esc(a.name)}: ${a.stock <= 0 ? "ACABOU" : "restam " + a.stock}</div>`).join("")}` : ""}
     <div class="hr"></div>

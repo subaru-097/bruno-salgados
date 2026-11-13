@@ -698,6 +698,45 @@ create policy stories_read on public.stories as PERMISSIVE for SELECT to anon, a
 -- ---------- tempo real (cliente e painel se atualizam sozinhos) ----------
 alter publication supabase_realtime add table public.store_settings, public.categories, public.products, public.stories, public.orders;
 
+-- ---------- Mercado Pago (pagamento online) ----------
+alter table public.orders add column if not exists mp_preference_id text;
+alter table public.orders add column if not exists mp_checkout_url text;
+alter table public.orders add column if not exists mp_payment_id text;
+alter table public.orders add column if not exists mp_paid_at timestamptz;
+
+-- o Access Token fica no cofre: select vault.create_secret('APP_USR-...', 'mp_access_token');
+create or replace function public.mp_token()
+returns text language sql stable security definer set search_path to 'public' as $$
+  select decrypted_secret from vault.decrypted_secrets where name = 'mp_access_token' order by created_at desc limit 1;
+$$;
+revoke all on function public.mp_token() from public, anon, authenticated;
+grant execute on function public.mp_token() to service_role;
+
+create or replace function public.mp_confirm_payment(p_order uuid, p_payment_id text, p_amount numeric)
+returns text language plpgsql security definer set search_path to 'public' as $$
+declare o public.orders; v_sess uuid;
+begin
+  select * into o from public.orders where id = p_order for update;
+  if not found then return 'nao_encontrado'; end if;
+  if o.payment_status in ('pago','fiado') then return 'ja_pago'; end if;
+  if o.status = 'cancelado' then
+    update public.orders set mp_payment_id = p_payment_id where id = o.id;
+    return 'cancelado';
+  end if;
+  if coalesce(p_amount, 0) + 0.01 < o.total then return 'valor_divergente'; end if;
+  select id into v_sess from public.cash_sessions where status = 'aberto';
+  if v_sess is not null and o.total > 0 then
+    insert into public.cash_movements(session_id, kind, method, amount, description, order_id, customer_id)
+    values (v_sess, 'venda', 'mercadopago', o.total, 'Pedido #' || o.code || ' · ' || o.customer_name || ' (online)', o.id, o.customer_id);
+  end if;
+  update public.orders set payment_status = 'pago', payment_method = 'mercadopago', mp_payment_id = p_payment_id,
+    mp_paid_at = now(), cash_session_id = coalesce(v_sess, cash_session_id), updated_at = now()
+  where id = o.id;
+  return 'pago';
+end $$;
+revoke all on function public.mp_confirm_payment(uuid, text, numeric) from public, anon, authenticated;
+grant execute on function public.mp_confirm_payment(uuid, text, numeric) to service_role;
+
 -- ---------- vigia do plano grátis (ping diário + data do último backup) ----------
 create table if not exists public.system_status (
   id integer primary key default 1 check (id = 1),

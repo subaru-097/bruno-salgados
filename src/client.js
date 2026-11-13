@@ -28,6 +28,9 @@ async function startClient() {
   bus.on("settings", async () => { CL.s = await API.settings(); renderClient(); });
   bus.on("stories", async () => { CL.stories = (await API.stories()).filter(s => new Date(s.expires_at) > new Date()); renderClient(); });
   const last = store.get("lastOrder"); if (last && Date.now() - last.t < 6 * 36e5) renderClient();
+  // volta do Mercado Pago: abre o acompanhamento do pedido e confere o pagamento
+  const back = new URLSearchParams(location.search).get("pedido");
+  if (back && /^[0-9a-f-]{36}$/i.test(back)) { history.replaceState(null, "", location.pathname + location.hash); API.checkOnlinePayment(back); openTracking(back, false); }
 }
 function debounce(f, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => f(...a), ms); }; }
 async function loadClientData() {
@@ -322,7 +325,7 @@ function openCart() {
     CL.cart = {}; store.set("cart", {}); CL.quote = null;
     store.set("lastOrder", { id: r.id, code: r.code, t: Date.now() });
     sh.close(); renderClient();
-    if (method === "mercadopago") { try { location.href = await API.startOnlinePayment(r.id); return; } catch (err) { toast(err.message + " Pague na entrega.", true); } }
+    if (method === "mercadopago") { try { location.href = await API.startOnlinePayment(r.id); return; } catch (err) { toast(err.message + " Tente de novo pela tela do pedido.", true); } }
     openTracking(r.id, true);
   });
   ["ck-name", "ck-phone"].forEach(id => $("#" + id, el).addEventListener("change", () => { CL.me.name = $("#ck-name", el).value.trim(); CL.me.phone = $("#ck-phone", el).value.trim(); store.set("me", CL.me); }));
@@ -349,6 +352,11 @@ function openTracking(id, fresh) {
       ${o.status === "cancelado" ? `<div class="closed-note">Este pedido foi cancelado pela loja. Fale com a gente se tiver dúvidas.</div>` : `<div class="track">${steps.map(([k, t, d]) => {
         const si = stepIdx(k), done = idx > si || (k === "entregue" && o.status === "entregue"), now = o.status === k || (k === "pronto" && o.status === "saiu" && !ent);
         return `<div class="tstep ${done ? "done" : ""} ${now ? "now" : ""}"><span class="b">${done ? ICON.check : ""}</span><div><div style="font-weight:600">${t}</div><div class="muted" style="font-size:.85rem">${esc(d)}</div></div></div>`; }).join("")}</div>`}
+      ${o.payment_method === "mercadopago" && o.status !== "cancelado" ? (o.payment_status === "pago"
+        ? `<div class="box"><span class="lbl">Pagamento online</span><b style="color:var(--ok, #3fb950)">${ICON.check} Pagamento confirmado</b></div>`
+        : `<div class="box"><span class="lbl">Pagamento online</span><div class="num" style="font-size:1.4rem;font-weight:800">${money(o.total)}</div>
+          <span class="muted" style="font-size:.88rem">Ainda não recebemos a confirmação. Se você já pagou, aguarde alguns segundos: esta tela atualiza sozinha.</span>
+          <button class="btn primary block" id="tr-mp">Pagar com Pix ou cartão</button></div>`) : ""}
       ${o.payment_method === "pix" && o.payment_status === "pendente" && s.pix_key ? `<div class="box"><span class="lbl">Pague com Pix</span><div class="num" style="font-size:1.4rem;font-weight:800">${money(o.total)}</div>
         <div class="row" style="justify-content:space-between"><code style="font-size:.95rem;word-break:break-all;user-select:all">${esc(s.pix_key)}</code><button class="btn sm" id="tr-pix">Copiar chave</button></div>
         <span class="faint" style="font-size:.82rem">${esc(s.pix_name || "")} · Envie o comprovante pelo WhatsApp da loja</span></div>` : ""}
@@ -358,6 +366,8 @@ function openTracking(id, fresh) {
       ${s.whatsapp ? `<a class="btn block" href="${waLink(s.whatsapp, txt)}" target="_blank" rel="noopener">Falar com a loja no WhatsApp</a>
         <p class="faint" style="font-size:.8rem;text-align:center">WhatsApp da loja: <span style="user-select:all">${esc(s.whatsapp)}</span></p>` : ""}`;
     $("#tr-pix", body) && ($("#tr-pix", body).onclick = () => copyText(s.pix_key));
+    $("#tr-mp", body) && ($("#tr-mp", body).onclick = async e => { e.target.disabled = true;
+      try { location.href = await API.startOnlinePayment(o.id); } catch (err) { toast(err.message, true); e.target.disabled = false; } });
     if (["entregue", "cancelado"].includes(o.status)) clearInterval(timer);
   }
   load(); timer = setInterval(load, 8000);

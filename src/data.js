@@ -176,12 +176,15 @@ function makeSupabaseApi(sb) {
     signOut: () => sb.auth.signOut(),
     claimAdmin: () => rpc("claim_admin"),
     async startOnlinePayment(orderId) {
-      // Caminho aberto para o Mercado Pago: uma Edge Function "mp-checkout" cria a preferência
-      // com o Access Token guardado no servidor e devolve o link de pagamento.
+      // a Edge Function "mp-checkout" cria a cobrança com o Access Token guardado no servidor e devolve o link de pagamento
       const { data, error } = await sb.functions.invoke("mp-checkout", { body: { order_id: orderId } });
-      if (error || !data?.init_point) throw new Error("Pagamento online ainda não foi ativado pela loja.");
-      return data.init_point;
+      if (data?.init_point) return data.init_point;
+      let code = data?.error; try { code ||= (await error?.context?.json?.())?.error; } catch {}
+      throw new Error({ PEDIDO_JA_PAGO: "Este pedido já está pago.", PEDIDO_CANCELADO: "Este pedido foi cancelado.", PEDIDO_EXPIRADO: "O prazo para pagar este pedido acabou." }[code]
+        || "Não conseguimos abrir o pagamento online agora.");
     },
+    // confere no Mercado Pago se o pedido já foi pago (quando o cliente volta do checkout)
+    async checkOnlinePayment(orderId) { try { const { data } = await sb.functions.invoke("mp-checkout", { body: { order_id: orderId, action: "verificar" } }); return data?.status || null; } catch { return null; } },
     subscribeAll() {
       const ch = sb.channel("bs-live");
       [["products", "products"], ["store_settings", "settings"], ["stories", "stories"], ["categories", "products"], ["orders", "orders"]]
@@ -354,6 +357,7 @@ function makeDemoApi() {
     async addStory(s) { S.stories.unshift({ id: uid(), image_url: s.image_url, caption: s.caption, media_type: s.media_type || "image", created_at: new Date().toISOString(), expires_at: new Date(Date.now() + (s.hours || 24) * 36e5).toISOString() }); tick("stories"); },
     async deleteStory(id) { S.stories = S.stories.filter(s => s.id !== id); tick("stories"); },
     async cleanupStories() { const lim = Date.now() - 2 * 864e5, n = S.stories.length; S.stories = S.stories.filter(s => new Date(s.expires_at) >= lim); return n - S.stories.length; },
+    checkOnlinePayment: async () => null,
     systemStatus: async () => ({ id: 1, last_ping: new Date(Date.now() - 3 * 36e5).toISOString(), last_backup: new Date(Date.now() - 2 * 864e5).toISOString(), ping_count: 12, idle_days: 0 }),
     upload: file => file.type.startsWith("video") ? Promise.resolve(URL.createObjectURL(file)) : new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); }),
     async quote(lat, lng, routeKm, subtotal) {
@@ -439,7 +443,7 @@ function makeDemoApi() {
     async signUp(email) { S.user = { email }; return true; },
     async signOut() { S.user = null; },
     async claimAdmin() { return true; },
-    async startOnlinePayment() { throw new Error("Pagamento online ainda não foi ativado pela loja."); },
+    async startOnlinePayment() { throw new Error("Na apresentação o pagamento online fica desligado."); },
     subscribeAll() {}
   };
   return api;
