@@ -255,6 +255,8 @@ CREATE INDEX movements_session_idx ON public.cash_movements USING btree (session
 CREATE UNIQUE INDEX one_open_session ON public.cash_sessions USING btree (status) WHERE (status = 'aberto'::text);
 CREATE INDEX order_items_order_idx ON public.order_items USING btree (order_id);
 CREATE INDEX order_items_product_idx ON public.order_items USING btree (product_id);
+CREATE INDEX orders_cash_session_idx ON public.orders USING btree (cash_session_id);
+CREATE INDEX orders_customer_idx ON public.orders USING btree (customer_id);
 CREATE INDEX orders_created_idx ON public.orders USING btree (created_at DESC);
 CREATE INDEX orders_payment_idx ON public.orders USING btree (payment_status) WHERE (payment_status = 'pendente'::text);
 CREATE INDEX orders_status_idx ON public.orders USING btree (status, created_at DESC);
@@ -678,7 +680,7 @@ alter table public.orders enable row level security;
 alter table public.order_items enable row level security;
 alter table public.message_log enable row level security;
 
-create policy admins_self on public.admins as PERMISSIVE for SELECT to authenticated using ((user_id = auth.uid()));
+create policy admins_self on public.admins as PERMISSIVE for SELECT to authenticated using ((user_id = (select auth.uid())));
 create policy movements_admin on public.cash_movements as PERMISSIVE for ALL to authenticated using (is_admin()) with check (is_admin());
 create policy sessions_admin on public.cash_sessions as PERMISSIVE for ALL to authenticated using (is_admin()) with check (is_admin());
 create policy categories_admin on public.categories as PERMISSIVE for ALL to authenticated using (is_admin()) with check (is_admin());
