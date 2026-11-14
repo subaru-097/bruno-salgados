@@ -170,7 +170,17 @@ function makeSupabaseApi(sb) {
     closeCash: (counted, notes) => rpc("close_cash", { p_counted: counted, p_notes: notes || null }),
     cashSessions: ({ from } = {}) => all(() => { let b = sb.from("cash_sessions").select("*, cash_movements(*)").order("opened_at", { ascending: false });
       if (from) b = b.gte("opened_at", from.toISOString()); return b; }),
-    async getUser() { const { data } = await sb.auth.getSession(); return data.session?.user || null; },
+    // login fica salvo neste aparelho: se a internet ainda não conectou (PC acabou de ligar), espera e tenta de novo
+    // em vez de mandar para a tela de login
+    async getUser() {
+      for (const wait of [0, 1500, 3000, 5000, 8000]) {
+        if (wait) await new Promise(r => setTimeout(r, wait));
+        const { data, error } = await sb.auth.getSession();
+        if (data.session?.user) return data.session.user;
+        if (!error) return null; // não tem login salvo
+      }
+      return null;
+    },
     async signIn(email, password) { const { error } = await sb.auth.signInWithPassword({ email, password }); if (error) throw error; },
     async signUp(email, password) { const { data, error } = await sb.auth.signUp({ email, password }); if (error) throw error; return !!data.session; },
     signOut: () => sb.auth.signOut(),
@@ -464,7 +474,7 @@ function offlineScreen() {
 async function initApi() {
   if (!MODO_APRESENTACAO && window.supabase?.createClient) {
     try {
-      const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: true, storageKey: "bs-auth" } });
+      const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: true, autoRefreshToken: true, storageKey: "bs-auth" } });
       const probe = sb.from("store_settings").select("id").eq("id", 1).single();
       const r = await Promise.race([probe, new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 6000))]);
       if (r.error) throw r.error;

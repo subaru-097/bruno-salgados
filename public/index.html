@@ -1122,7 +1122,17 @@ function makeSupabaseApi(sb) {
     closeCash: (counted, notes) => rpc("close_cash", { p_counted: counted, p_notes: notes || null }),
     cashSessions: ({ from } = {}) => all(() => { let b = sb.from("cash_sessions").select("*, cash_movements(*)").order("opened_at", { ascending: false });
       if (from) b = b.gte("opened_at", from.toISOString()); return b; }),
-    async getUser() { const { data } = await sb.auth.getSession(); return data.session?.user || null; },
+    // login fica salvo neste aparelho: se a internet ainda não conectou (PC acabou de ligar), espera e tenta de novo
+    // em vez de mandar para a tela de login
+    async getUser() {
+      for (const wait of [0, 1500, 3000, 5000, 8000]) {
+        if (wait) await new Promise(r => setTimeout(r, wait));
+        const { data, error } = await sb.auth.getSession();
+        if (data.session?.user) return data.session.user;
+        if (!error) return null; // não tem login salvo
+      }
+      return null;
+    },
     async signIn(email, password) { const { error } = await sb.auth.signInWithPassword({ email, password }); if (error) throw error; },
     async signUp(email, password) { const { data, error } = await sb.auth.signUp({ email, password }); if (error) throw error; return !!data.session; },
     signOut: () => sb.auth.signOut(),
@@ -1416,7 +1426,7 @@ function offlineScreen() {
 async function initApi() {
   if (!MODO_APRESENTACAO && window.supabase?.createClient) {
     try {
-      const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: true, storageKey: "bs-auth" } });
+      const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: true, autoRefreshToken: true, storageKey: "bs-auth" } });
       const probe = sb.from("store_settings").select("id").eq("id", 1).single();
       const r = await Promise.race([probe, new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 6000))]);
       if (r.error) throw r.error;
@@ -2008,7 +2018,9 @@ const head = (title, sub, actions = "") => `<div class="page-h"><div><h2>${esc(t
 async function startAdmin() {
   document.title = "Bruno Salgados · Painel";
   AD.user = await API.getUser();
-  if (AD.user && !(await API.claimAdmin().catch(() => false))) { await API.signOut(); AD.user = null; }
+  // só tira o acesso se o servidor disser que a conta não é do dono; falha de internet não desloga ninguém
+  if (AD.user) { let ok = null; for (const w of [0, 2000, 4000]) { if (w) await new Promise(r => setTimeout(r, w)); try { ok = await API.claimAdmin(); break; } catch {} }
+    if (ok === false) { await API.signOut(); AD.user = null; } }
   if (!AD.user && API.mode === "demo") { await API.signIn(); AD.user = await API.getUser(); }
   if (!AD.user) return renderLogin();
   AD.s = await API.settings();
@@ -2048,7 +2060,7 @@ function renderLogin() {
     <div class="brand">${LOGO}<div><div class="brand-name">Bruno Salgados</div><div class="brand-sub">Painel do dono</div></div></div>
     ${demo ? `<p class="muted">Você está no modo demonstração, com dados de exemplo. Nada aqui afeta a loja de verdade.</p>
       <button class="btn primary block" id="lg-demo">Entrar na demonstração</button>`
-    : `<p class="muted" style="font-size:.9rem">Entre com o e-mail e a senha do painel.</p>
+    : `<p class="muted" style="font-size:.9rem">Entre com o e-mail e a senha do painel. Você só faz isso uma vez neste aparelho: depois ele abre direto.</p>
       <form id="lg-form" style="display:flex;flex-direction:column;gap:12px">
         <div class="field"><label for="lg-email">E-mail</label><input class="input" id="lg-email" type="email" autocomplete="username" required></div>
         <div class="field"><label for="lg-pass">Senha</label><input class="input" id="lg-pass" type="password" autocomplete="current-password" required></div>

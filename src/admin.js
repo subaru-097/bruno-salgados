@@ -47,7 +47,9 @@ const head = (title, sub, actions = "") => `<div class="page-h"><div><h2>${esc(t
 async function startAdmin() {
   document.title = "Bruno Salgados · Painel";
   AD.user = await API.getUser();
-  if (AD.user && !(await API.claimAdmin().catch(() => false))) { await API.signOut(); AD.user = null; }
+  // só tira o acesso se o servidor disser que a conta não é do dono; falha de internet não desloga ninguém
+  if (AD.user) { let ok = null; for (const w of [0, 2000, 4000]) { if (w) await new Promise(r => setTimeout(r, w)); try { ok = await API.claimAdmin(); break; } catch {} }
+    if (ok === false) { await API.signOut(); AD.user = null; } }
   if (!AD.user && API.mode === "demo") { await API.signIn(); AD.user = await API.getUser(); }
   if (!AD.user) return renderLogin();
   AD.s = await API.settings();
@@ -87,7 +89,7 @@ function renderLogin() {
     <div class="brand">${LOGO}<div><div class="brand-name">Bruno Salgados</div><div class="brand-sub">Painel do dono</div></div></div>
     ${demo ? `<p class="muted">Você está no modo demonstração, com dados de exemplo. Nada aqui afeta a loja de verdade.</p>
       <button class="btn primary block" id="lg-demo">Entrar na demonstração</button>`
-    : `<p class="muted" style="font-size:.9rem">Entre com o e-mail e a senha do painel.</p>
+    : `<p class="muted" style="font-size:.9rem">Entre com o e-mail e a senha do painel. Você só faz isso uma vez neste aparelho: depois ele abre direto.</p>
       <form id="lg-form" style="display:flex;flex-direction:column;gap:12px">
         <div class="field"><label for="lg-email">E-mail</label><input class="input" id="lg-email" type="email" autocomplete="username" required></div>
         <div class="field"><label for="lg-pass">Senha</label><input class="input" id="lg-pass" type="password" autocomplete="current-password" required></div>
