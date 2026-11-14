@@ -25,13 +25,24 @@ function playAlert(kind, vol) {
 }
 
 /* ---------- recibo ---------- */
+// fontes que toda impressora térmica imprime bem pelo Windows
+const RECEIPT_FONTS = {
+  mono: ["Courier (padrão de cupom)", '"Courier New",ui-monospace,monospace'],
+  sans: ["Arial (mais legível)", 'Arial,Helvetica,sans-serif'],
+  condensed: ["Arial estreita (cabe mais)", '"Arial Narrow","Roboto Condensed","Liberation Sans Narrow",Arial,sans-serif'],
+  serif: ["Times (clássica)", '"Times New Roman",Times,serif'],
+};
+const receiptFontPx = (s, w) => n2((w === 58 ? 11 : 12.5) * Math.max(70, Math.min(180, Number(s.receipt_font_size) || 100)) / 100);
 function receiptHTML(o, s = AD.s || {}) {
   const w = Number(s.receipt_width) === 58 ? 58 : 80, items = o.order_items || o.items || [];
+  const showUnit = s.receipt_show_unit !== false, showFiscal = s.receipt_show_fiscal !== false;
+  const header = String(s.receipt_header || "").split("\n").map(x => x.trim()).filter(Boolean);
   const line = (a, b, cls = "") => `<div class="r ${cls}"><span>${a}</span><span>${b}</span></div>`;
   const parts = payParts(o);
   const one = `<div class="rc">
-    <div class="c b big">${esc(s.store_name || "Bruno Salgados")}</div>
-    ${s.address ? `<div class="c sm">${esc(s.address)}</div>` : ""}${s.whatsapp ? `<div class="c sm">WhatsApp ${esc(s.whatsapp)}</div>` : ""}
+    <div class="c b big">${esc(s.receipt_title || s.store_name || "Bruno Salgados")}</div>
+    ${header.length ? header.map(l => `<div class="c sm">${esc(l)}</div>`).join("")
+      : `${s.address ? `<div class="c sm">${esc(s.address)}</div>` : ""}${s.whatsapp ? `<div class="c sm">WhatsApp ${esc(s.whatsapp)}</div>` : ""}`}
     <div class="hr"></div>
     <div class="c b big">PEDIDO Nº ${o.code}</div>
     <div class="c sm">${new Date(o.created_at).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}</div>
@@ -40,7 +51,8 @@ function receiptHTML(o, s = AD.s || {}) {
     <div><b>Cliente:</b> ${esc(o.customer_name)}</div>${o.customer_phone ? `<div><b>Telefone:</b> ${esc(o.customer_phone)}</div>` : ""}
     ${o.fulfillment === "entrega" ? `<div><b>Endereço:</b> ${esc(o.address || "")}</div>${o.address_ref ? `<div><b>Ref.:</b> ${esc(o.address_ref)}</div>` : ""}` : ""}
     <div class="hr"></div>
-    ${items.map(i => `<div class="it"><div>${i.qty}x ${esc(i.name)}</div><div class="r sm"><span>${i.qty} x ${money(i.unit_price ?? i.total / i.qty)}</span><span>${money(i.total)}</span></div></div>`).join("")}
+    ${items.map(i => showUnit ? `<div class="it"><div>${i.qty}x ${esc(i.name)}</div><div class="r sm"><span>${i.qty} x ${money(i.unit_price ?? i.total / i.qty)}</span><span>${money(i.total)}</span></div></div>`
+      : `<div class="it r"><span>${i.qty}x ${esc(i.name)}</span><span>${money(i.total)}</span></div>`).join("")}
     <div class="hr"></div>
     ${line("Subtotal", money(o.subtotal))}${Number(o.delivery_fee) ? line("Taxa de entrega", money(o.delivery_fee)) : ""}${Number(o.discount) ? line("Desconto", "-" + money(o.discount)) : ""}
     ${line("TOTAL", money(o.total), "b big")}
@@ -51,12 +63,12 @@ function receiptHTML(o, s = AD.s || {}) {
     ${o.notes ? `<div class="hr"></div><div><b>Obs.:</b> ${esc(o.notes)}</div>` : ""}
     ${o.stock_alerts?.length ? `<div class="hr"></div><div class="b">ATENÇÃO ESTOQUE:</div>${o.stock_alerts.map(a => `<div>${esc(a.name)}: ${a.stock <= 0 ? "ACABOU" : "restam " + a.stock}</div>`).join("")}` : ""}
     <div class="hr"></div>
-    ${s.receipt_footer ? `<div class="c">${esc(s.receipt_footer)}</div>` : ""}<div class="c sm">Não é documento fiscal</div></div>`;
+    ${s.receipt_footer ? `<div class="c">${esc(s.receipt_footer)}</div>` : ""}${showFiscal ? `<div class="c sm">Não é documento fiscal</div>` : ""}</div>`;
   const copies = Math.max(1, Math.min(3, Number(s.receipt_copies) || 1));
   return `<!doctype html><html><head><meta charset="utf-8"><title>Pedido ${o.code}</title><style>
-    @page{size:${w}mm auto;margin:0}*{box-sizing:border-box}body{margin:0;font:${w === 58 ? 11 : 12.5}px/1.35 "Courier New",ui-monospace,monospace;color:#000;background:#fff}
+    @page{size:${w}mm auto;margin:0}*{box-sizing:border-box}body{margin:0;font:${receiptFontPx(s, w)}px/1.35 ${RECEIPT_FONTS[s.receipt_font]?.[1] || RECEIPT_FONTS.mono[1]};font-weight:${s.receipt_bold ? 700 : 400};color:#000;background:#fff;-webkit-font-smoothing:none}
     .rc{width:${w}mm;padding:3mm ${w === 58 ? 2 : 4}mm;page-break-after:always}.rc:last-child{page-break-after:auto}
-    .c{text-align:center}.b{font-weight:700}.big{font-size:1.25em}.sm{font-size:.88em}.hr{border-top:1px dashed #000;margin:5px 0}
+    .c{text-align:center}.b{font-weight:${s.receipt_bold ? 900 : 700}}.big{font-size:1.25em}.sm{font-size:.88em}.hr{border-top:1px dashed #000;margin:5px 0}
     .r{display:flex;justify-content:space-between;gap:8px}.it{margin-bottom:3px}</style></head><body>${Array(copies).fill(one).join("")}</body></html>`;
 }
 function printReceipt(o, { silentFail } = {}) {

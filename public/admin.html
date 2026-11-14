@@ -921,6 +921,25 @@ table.tbl{border-collapse:collapse;width:100%;font-size:.93rem;font-variant-nume
   .shortcuts button{flex:none}
   .hide-sm{display:none}
 }
+/* venda com entrega (balcão) */
+.ent-seg button{display:inline-flex;align-items:center;justify-content:center;gap:6px}.ent-seg .svg-i{width:16px;height:16px}
+.ent-box{display:flex;flex-direction:column;gap:10px;padding:12px;border-radius:14px;background:var(--surface-2);border:1px solid var(--line)}
+.ent-box .field{margin:0}
+.ent-info{display:flex;flex-direction:row;gap:10px;align-items:flex-start}.ent-info>div{display:flex;flex-direction:column;gap:2px;min-width:0}.ent-info .svg-i{flex:none;color:var(--accent);margin-top:2px}
+/* configurações do cupom com prévia ao lado */
+.rc-set{display:grid;grid-template-columns:minmax(0,1fr) 352px;gap:20px;align-items:start}
+.rc-form{display:flex;flex-direction:column;gap:12px;min-width:0}
+.rc-live{position:sticky;top:12px;display:flex;flex-direction:column;gap:8px}
+.rc-live .rcpt-prev{padding:10px}.rc-live .rcpt-prev iframe{width:330px;height:520px}
+@media (max-width:900px){.rc-set{grid-template-columns:1fr}.rc-live{position:static}}
+/* quantidade vendida no caixa */
+.qty-box{gap:10px}
+.qty-big{display:flex;gap:10px;flex-wrap:wrap}
+.qty-big>div{flex:1;min-width:110px;display:flex;flex-direction:column;padding:12px 14px;border-radius:14px;background:var(--surface);border:1px solid var(--line)}
+.qty-big b{font-size:1.9rem;font-weight:800;line-height:1.1;color:var(--accent-text)}.qty-big span{font-size:.85rem;color:var(--fg-2)}
+.qty-cats{display:flex;gap:6px;flex-wrap:wrap}.qty-cats .chip b{margin-left:4px}
+.qty-det summary{cursor:pointer;font-weight:700;padding:6px 0;color:var(--fg)}.qty-det .calc-row{padding:5px 0}
+#cx-qty:empty{display:none}
 </style>
 <script>window.BS_APP = "admin";</script>
 </head><body>
@@ -963,7 +982,7 @@ const ERR = {
   LOJA_FECHADA: "A loja está fechada agora. Tente mais tarde.",
   FORA_DO_RAIO: "Esse endereço está fora da área de entrega.",
   LOJA_SEM_LOCALIZACAO: "A loja ainda não configurou o endereço de saída das entregas. Escolha retirada.",
-  ENDERECO_INVALIDO: "Não encontramos esse endereço. Confira o CEP e o número.",
+  ENDERECO_INVALIDO: "Endereço não encontrado ou em branco. Confira a rua, o número e o CEP.",
   ENTREGA_DESATIVADA: "Entregas estão pausadas no momento. Escolha retirada.",
   RETIRADA_DESATIVADA: "Retirada indisponível no momento.",
   CAIXA_FECHADO: "Abra o caixa antes de registrar pagamentos.",
@@ -1305,6 +1324,7 @@ function makeDemoApi() {
       if (!String(p.customer_name || "").trim()) fail("NOME_OBRIGATORIO");
       if (!p.items?.length) fail("CARRINHO_VAZIO");
       if (p.payment_method === "fiado" && !p.customer_id) fail("CLIENTE_OBRIGATORIO_FIADO");
+      if (ch === "balcao" && p.fulfillment === "entrega" && !String(p.address || "").trim()) fail("ENDERECO_INVALIDO");
       for (const it of p.items) { const pr = S.products.find(x => x.id === it.product_id);
         if (!pr || !pr.is_active) fail("PRODUTO_INDISPONIVEL:" + (pr?.name || "?"));
         if (pr.track_stock && pr.stock < it.qty) fail(`SEM_ESTOQUE:${pr.name}:${pr.stock}`); }
@@ -1316,12 +1336,12 @@ function makeDemoApi() {
       else if (ch === "balcao") fee = Number(p.delivery_fee || 0);
       const disc = Number(p.discount || 0);
       const o = { id: uid(), code: S.code++, channel: ch, customer_id: p.customer_id || null, customer_name: p.customer_name.trim(), customer_phone: p.customer_phone || null,
-        fulfillment: ch === "balcao" ? "balcao" : p.fulfillment, address: p.address || null, address_ref: p.address_ref || null, distance_km: dist,
+        fulfillment: ch === "balcao" ? (p.fulfillment === "entrega" ? "entrega" : "balcao") : p.fulfillment, address: p.address || null, address_ref: p.address_ref || null, distance_km: dist,
         subtotal: sub, delivery_fee: fee, discount: disc, total: Math.max(0, sub + fee - disc), payment_method: p.payment_method, change_for: p.change_for || null,
         payment_status: "pendente", status: "novo", notes: p.notes || null, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), order_items: items };
       S.orders.push(o);
       if (p.payments?.length) o.payment_method = p.payments.length > 1 ? "misto" : p.payments[0].method;
-      if (ch === "balcao" && p.pay_now) { if (p.payments?.length) paySplit(o, p.payments, p.customer_id); else pay(o, p.payment_method, p.customer_id); o.status = "entregue"; }
+      if (ch === "balcao" && p.pay_now) { if (p.payments?.length) paySplit(o, p.payments, p.customer_id); else pay(o, p.payment_method, p.customer_id); o.status = o.fulfillment === "entrega" ? "preparando" : "entregue"; }
       tick("products"); tick("orders", { eventType: "INSERT", new: o });
       return { id: o.id, code: o.code, subtotal: sub, delivery_fee: fee, total: o.total };
     },
@@ -2193,7 +2213,7 @@ const payText = o => o.payments?.length > 1 ? o.payments.map(x => METHOD_LABEL[x
 
 async function openTabs() {
   const os = await API.orders({ from: new Date(Date.now() - 3 * 864e5) });
-  return os.filter(o => o.channel === "balcao" && o.payment_status === "pendente" && o.status !== "cancelado").sort((a, b) => (a.table_no || 99) - (b.table_no || 99) || a.created_at.localeCompare(b.created_at));
+  return os.filter(o => o.channel === "balcao" && o.fulfillment !== "entrega" && o.payment_status === "pendente" && o.status !== "cancelado").sort((a, b) => (a.table_no || 99) - (b.table_no || 99) || a.created_at.localeCompare(b.created_at));
 }
 async function vVendas(el) {
   const today = startOfDay(new Date());
@@ -2241,14 +2261,19 @@ async function saleModal({ edit, toPay, mesa } = {}) {
   if (edit) (edit.order_items || []).forEach(i => { const p = act.find(x => x.id === i.product_id); if (p?.track_stock) p.stock += i.qty; });
   const nT = Number(AD.s?.table_count || 0), busyT = new Set(open.filter(o => o.id !== edit?.id).map(o => o.table_no).filter(Boolean));
   const S = { items: edit ? (edit.order_items || []).filter(i => i.product_id).map(i => ({ id: i.product_id, qty: i.qty })) : [], step: toPay ? "pay" : "prod", pays: [],
-    cust: edit?.customer_id ? custs.find(c => c.id === edit.customer_id) || null : null, disc: Number(edit?.discount || 0), method: null, q: "", sel: 0, mesa: edit ? edit.table_no || null : mesa || null };
+    cust: edit?.customer_id ? custs.find(c => c.id === edit.customer_id) || null : null, disc: Number(edit?.discount || 0), method: null, q: "", sel: 0, mesa: edit ? edit.table_no || null : mesa || null,
+    ent: { on: false, name: "", phone: "", address: "", ref: "", fee: 0 } };
   const title = edit ? (edit.table_no ? `Mesa ${edit.table_no}` : `Conta nº ${edit.code}`) : "Nova venda";
   const sh = openSheet(`<div class="sheet-head"><div><h2>${esc(title)}</h2><p class="faint" id="sm-sub" style="margin-top:2px">1. Escolha os produtos</p></div><button class="btn icon ghost" data-close aria-label="Fechar">✕</button></div>
     <div class="sale"><div class="sale-left" id="sm-left"></div><aside class="sale-right" id="sm-right"></aside></div><div class="sm-bar" id="sm-bar" hidden></div>`, { cls: "wide" });
   const el = sh.el;
   const line = id => act.find(p => p.id === id);
   const lines = () => S.items.map(i => ({ ...i, p: line(i.id) }));
-  const sub = () => sumBy(lines(), l => l.p.price * l.qty), total = () => n2(Math.max(0, sub() - S.disc));
+  const fee = () => S.ent.on ? Number(S.ent.fee || 0) : 0;
+  const sub = () => sumBy(lines(), l => l.p.price * l.qty), total = () => n2(Math.max(0, sub() + fee() - S.disc));
+  // entrega feita pelo balcão: precisa de nome e endereço antes de seguir
+  const entOk = () => { if (!S.ent.on) return true; if (!(S.ent.name || S.cust?.name || "").trim()) { toast("Digite o nome do cliente da entrega.", true); $("#se-name", el)?.focus(); return false; }
+    if (!S.ent.address.trim()) { toast("Digite o endereço da entrega.", true); $("#se-addr", el)?.focus(); return false; } return true; };
   const paid = () => n2(sumBy(S.pays, x => x.amount)), remaining = () => n2(total() - paid());
   const change = () => sumBy(S.pays, x => x.change || 0);
   const inCart = id => S.items.find(i => i.id === id)?.qty || 0;
@@ -2326,33 +2351,44 @@ async function saleModal({ edit, toPay, mesa } = {}) {
     const R = $("#sm-right", el), ls = lines(), rem = remaining(), editing = S.step === "prod";
     const needCash = S.pays.some(x => x.method !== "fiado") && !sess;
     const mesaSel = nT ? `<div class="field"><label for="sm-mesa">Mesa</label><select class="input" id="sm-mesa" ${!editing && !edit ? "" : ""}><option value="">Sem mesa (balcão)</option>${Array.from({ length: nT }, (_, i) => i + 1).map(n => `<option value="${n}" ${S.mesa === n ? "selected" : ""} ${busyT.has(n) ? "disabled" : ""}>Mesa ${n}${busyT.has(n) ? " (ocupada)" : ""}</option>`).join("")}</select></div>` : "";
-    R.innerHTML = `<h3>${edit ? "Conta" : "Resumo da venda"}</h3>${editing || !edit ? mesaSel : ""}
+    const E = S.ent, entSel = !edit && editing ? `<div class="seg ent-seg" role="group" aria-label="Tipo de venda"><button type="button" data-ft="bal" aria-pressed="${!E.on}">Balcão / mesa</button><button type="button" data-ft="ent" aria-pressed="${E.on}">${ICON.pin}Entrega</button></div>
+      ${E.on ? `<div class="ent-box"><div class="field"><label for="se-name">Cliente</label><input class="input" id="se-name" value="${esc(E.name || S.cust?.name || "")}" placeholder="Nome de quem recebe" autocomplete="off"></div>
+        <div class="field"><label for="se-phone">Telefone</label><input class="input" id="se-phone" inputmode="tel" value="${esc(E.phone)}" placeholder="(19) 99999-0000"></div>
+        <div class="field"><label for="se-addr">Endereço</label><input class="input" id="se-addr" value="${esc(E.address)}" placeholder="Rua, número e bairro" autocomplete="off"></div>
+        <div class="field"><label for="se-ref">Referência (opcional)</label><input class="input" id="se-ref" value="${esc(E.ref)}" placeholder="Ex.: portão verde"></div>
+        <div class="field"><label for="se-fee">Taxa de entrega (R$)</label><input class="input num" id="se-fee" inputmode="decimal" value="${E.fee ? moneyInput(E.fee) : ""}" placeholder="0,00"></div></div>` : ""}` : "";
+    const entInfo = E.on && !editing ? `<div class="box ent-info">${ICON.pin}<div><b>Entrega · ${esc(E.name || S.cust?.name || "")}</b><span class="faint">${esc(E.address)}${E.ref ? " · " + esc(E.ref) : ""}</span></div></div>` : "";
+    R.innerHTML = `<h3>${edit ? "Conta" : "Resumo da venda"}</h3>${entSel}${entInfo}${(editing || !edit) && !E.on ? mesaSel : ""}
       <div class="sm-cart">${ls.length ? ls.map(l => `<div class="sm-line"><div class="grow"><b>${esc(l.p.name)}</b><span class="faint num">${money(l.p.price)} cada</span></div>
         ${editing ? `<span class="qty"><button data-m="${l.id}" aria-label="Menos">−</button><b class="num">${l.qty}</b><button data-pl="${l.id}" aria-label="Mais">+</button></span>` : `<span class="faint num">${l.qty}×</span>`}
         <b class="num">${money(l.p.price * l.qty)}</b></div>`).join("") : `<p class="faint" style="padding:18px 0;text-align:center">Nenhum produto ainda.<br>Toque num produto para adicionar.</p>`}</div>
       ${ls.length ? `${editing ? `<div class="field"><label for="sm-disc">Desconto (R$)</label><input class="input num" id="sm-disc" inputmode="decimal" value="${S.disc ? moneyInput(S.disc) : ""}" placeholder="0,00"></div>` : S.disc ? `<div class="calc-row"><span>Desconto</span><b class="num">−${money(S.disc)}</b></div>` : ""}
+        ${fee() ? `<div class="calc-row"><span>Taxa de entrega</span><b class="num">${money(fee())}</b></div>` : ""}
         <div class="total-line"><span class="muted">Total</span><b>${money(total())}</b></div>
         ${S.pays.length ? `<div class="sm-pays">${S.pays.map((x, i) => `<div class="calc-row"><span>${METHOD_LABEL[x.method]}${x.method === "fiado" && S.cust ? " · " + esc(S.cust.name) : ""}${x.change ? ` <span class="faint">(recebido ${money(x.received)})</span>` : ""}</span><span class="row" style="gap:6px;flex-wrap:nowrap"><b class="num">${money(x.amount)}</b><button class="x-btn" data-rm="${i}" aria-label="Remover pagamento">✕</button></span></div>`).join("")}
           ${rem > 0 ? `<div class="calc-row" style="color:var(--bad)"><span style="color:inherit">Falta</span><b class="num">${money(rem)}</b></div>` : change() > 0 ? `<div class="calc-row" style="color:var(--good)"><span style="color:inherit">Troco</span><b class="num">${money(change())}</b></div>` : ""}</div>` : ""}
         ${editing ? `<button class="btn primary block big-btn" id="sm-next">${edit ? "Pagar e concluir" : "Ir para pagamento"} ${ICON.arrow}</button>`
           : `<button class="btn primary block big-btn" id="sm-fin" ${rem > 0 || needCash ? "disabled" : ""}>${needCash ? "Abra o caixa para receber" : rem > 0 ? "Falta " + money(rem) : edit ? "Concluir venda" : "Pagar agora e finalizar"}</button>`}
-        ${edit ? `<button class="btn ghost block" id="sm-save">Salvar alterações e voltar a esperar</button>` : `<button class="btn ghost block" id="sm-later">${ICON.clockF}Aguardar pagamento${S.mesa ? " · Mesa " + S.mesa : ""}</button>`}` : ""}
+        ${edit ? `<button class="btn ghost block" id="sm-save">Salvar alterações e voltar a esperar</button>` : `<button class="btn ghost block" id="sm-later">${ICON.clockF}${E.on ? "Receber na entrega" : "Aguardar pagamento" + (S.mesa ? " · Mesa " + S.mesa : "")}</button>`}` : ""}
       ${edit ? `<button class="link-btn" id="sm-cancel" style="color:var(--bad);align-self:center">Cancelar esta conta</button>` : ""}`;
     const bar = $("#sm-bar", el), n = sumBy(ls, l => l.qty);
     bar.hidden = !ls.length || S.step === "done" || (S.step === "pay" && !!S.method);
     bar.innerHTML = editing ? `<span><b class="num">${money(total())}</b><span class="faint"> · ${n} ${n === 1 ? "item" : "itens"}</span></span><button class="btn primary" id="smb-go">Pagamento ${ICON.arrow}</button>`
       : rem > 0 ? `<span><span class="faint">Falta </span><b class="num" style="color:var(--bad)">${money(rem)}</b></span><button class="btn ghost" id="smb-sum">Ver resumo</button>`
       : `<span><b class="num">${money(total())}</b>${change() > 0 ? `<span class="faint"> · troco ${money(change())}</span>` : ""}</span><button class="btn primary" id="smb-fin" ${needCash ? "disabled" : ""}>Finalizar venda</button>`;
-    $("#smb-go", bar) && ($("#smb-go", bar).onclick = () => { S.step = "pay"; drawLeft(); drawRight(); el.scrollTo?.(0, 0); });
+    $("#smb-go", bar) && ($("#smb-go", bar).onclick = () => { if (!entOk()) return; S.step = "pay"; drawLeft(); drawRight(); el.scrollTo?.(0, 0); });
     $("#smb-sum", bar) && ($("#smb-sum", bar).onclick = () => R.scrollIntoView({ behavior: "smooth" }));
     $("#smb-fin", bar) && ($("#smb-fin", bar).onclick = e => finish(true, e.currentTarget));
     $$("[data-pl]", R).forEach(b => b.onclick = () => add(line(b.dataset.pl)));
     $$("[data-m]", R).forEach(b => b.onclick = () => { const it = S.items.find(i => i.id === b.dataset.m); it.qty--; if (it.qty <= 0) S.items = S.items.filter(i => i !== it); drawRight(); drawList(); });
     $$("[data-rm]", R).forEach(b => b.onclick = () => { S.pays.splice(+b.dataset.rm, 1); if (!S.pays.some(x => x.method === "fiado")) S.cust = S.cust; drawPay(); drawRight(); });
     $("#sm-disc", R) && ($("#sm-disc", R).onchange = e => { S.disc = Math.min(sub(), parseMoney(e.target.value)); drawRight(); });
-    $("#sm-next", R) && ($("#sm-next", R).onclick = () => { S.step = "pay"; drawLeft(); drawRight(); });
+    $("#sm-next", R) && ($("#sm-next", R).onclick = () => { if (!entOk()) return; S.step = "pay"; drawLeft(); drawRight(); });
+    $$("[data-ft]", R).forEach(b => b.onclick = () => { S.ent.on = b.dataset.ft === "ent"; if (S.ent.on) S.mesa = null; drawRight(); if (S.ent.on) setTimeout(() => $("#se-name", el)?.focus(), 30); });
+    [["se-name", "name"], ["se-phone", "phone"], ["se-addr", "address"], ["se-ref", "ref"]].forEach(([id, k]) => { const i = $("#" + id, R); if (i) i.oninput = () => { S.ent[k] = i.value; }; });
+    $("#se-fee", R) && ($("#se-fee", R).onchange = e => { S.ent.fee = Math.max(0, parseMoney(e.target.value) || 0); drawRight(); });
     $("#sm-fin", R) && ($("#sm-fin", R).onclick = e => finish(true, e.currentTarget));
-    $("#sm-later", R) && ($("#sm-later", R).onclick = e => finish(false, e.currentTarget));
+    $("#sm-later", R) && ($("#sm-later", R).onclick = e => { if (entOk()) finish(false, e.currentTarget); });
     $("#sm-save", R) && ($("#sm-save", R).onclick = e => finish(false, e.currentTarget));
     $("#sm-mesa", R) && ($("#sm-mesa", R).onchange = e => { S.mesa = e.target.value ? +e.target.value : null; drawRight(); });
     $("#sm-cancel", R) && ($("#sm-cancel", R).onclick = async () => { if (!(await confirmSheet("Cancelar a conta?", "Os produtos voltam para o estoque e a conta some da lista.", "Cancelar conta", true))) return;
@@ -2376,18 +2412,25 @@ async function saleModal({ edit, toPay, mesa } = {}) {
       await API.payOrderSplit(edit.id, pays, S.cust?.id); await API.setStatus(edit.id, "entregue");
       r = { code: edit.code, total: total() };
     } else {
-      r = await API.placeOrder({ channel: "balcao", customer_name: label, customer_id: S.cust?.id || null, customer_phone: S.cust?.phone || null,
+      const E = S.ent, ent = E.on;
+      r = await API.placeOrder({ channel: "balcao", customer_name: ent ? (E.name || S.cust?.name || "").trim() : label, customer_id: S.cust?.id || null,
+        customer_phone: (ent && E.phone.trim()) || S.cust?.phone || null, fulfillment: ent ? "entrega" : "balcao",
+        address: ent ? E.address.trim() : null, address_ref: ent ? E.ref.trim() || null : null, delivery_fee: fee(),
         payment_method: pays[0]?.method || "dinheiro", payments: payNow ? pays : undefined, discount: S.disc, pay_now: payNow, items });
-      if (!payNow) { await API.setStatus(r.id, "preparando"); await API.updateOrder(r.id, { table_no: S.mesa }); }
+      if (!payNow) { await API.setStatus(r.id, "preparando"); if (!ent) await API.updateOrder(r.id, { table_no: S.mesa }); }
     }
     const ch = change();
     S.step = "done";
     $("#sm-sub", el).textContent = "Venda concluída";
     $("#sm-bar", el).hidden = true;
-    $(".sale", el).innerHTML = `<div class="sale-ok">${ICON.checkBig}<h3>${payNow ? (edit ? `${S.mesa ? "Mesa " + S.mesa : "Conta"} paga e concluída` : `Venda nº ${r.code} registrada`) : `${S.mesa ? "Mesa " + S.mesa + " aberta" : "Conta aberta"}, aguardando pagamento`}</h3>
+    const entDone = !edit && S.ent.on;
+    $(".sale", el).innerHTML = `<div class="sale-ok">${ICON.checkBig}<h3>${entDone ? `Entrega nº ${r.code} registrada${payNow ? " e paga" : ""}` : payNow ? (edit ? `${S.mesa ? "Mesa " + S.mesa : "Conta"} paga e concluída` : `Venda nº ${r.code} registrada`) : `${S.mesa ? "Mesa " + S.mesa + " aberta" : "Conta aberta"}, aguardando pagamento`}</h3>
+      ${entDone ? `<p class="muted">Ela já está em Pedidos › Em preparo. De lá você marca “Saiu para entrega” e conclui${payNow ? "" : ", recebendo o pagamento"}.</p>` : ""}
       <p class="muted">${money(r.total)}${payNow ? " · " + pays.map(x => METHOD_LABEL[x.method]).join(" + ") : ""}</p>${payNow && ch > 0 ? `<div class="diff ok" style="font-size:1.3rem">Troco: ${money(ch)}</div>` : ""}
-      <div class="row" style="justify-content:center"><button class="btn primary" id="sm-again">${ICON.plus}Nova venda</button><button class="btn ghost" data-close>Fechar</button></div></div>`;
+      <div class="row" style="justify-content:center"><button class="btn primary" id="sm-again">${ICON.plus}Nova venda</button><button class="btn ghost" id="sm-print">${ICON.receipt}Imprimir cupom</button><button class="btn ghost" data-close>Fechar</button></div></div>`;
     $("#sm-again", el).onclick = () => { sh.close(); saleModal(); };
+    const oid = edit?.id || r.id;
+    $("#sm-print", el).onclick = async () => { try { const full = await API.order(oid); if (full) printReceipt(full); } catch (x) { toast(errMsg(x), true); } };
     $$("[data-close]", el).forEach(b => b.onclick = () => sh.close());
     if (AD.view === "vendas") renderView();
   });
@@ -2421,8 +2464,9 @@ function todaySales(orders) {
 async function vPedidos(el) {
   const today = startOfDay(new Date());
   const orders = await API.orders({ from: new Date(today - 2 * 864e5) });
-  const live = orders.filter(o => o.channel === "app" && ["novo", "preparando", "pronto", "saiu"].includes(o.status));
-  const done = orders.filter(o => ["entregue", "cancelado"].includes(o.status) && new Date(o.created_at) >= today && o.channel === "app");
+  const tracked = o => o.channel === "app" || o.fulfillment === "entrega"; // pedidos do app e entregas lançadas no balcão
+  const live = orders.filter(o => tracked(o) && ["novo", "preparando", "pronto", "saiu"].includes(o.status));
+  const done = orders.filter(o => ["entregue", "cancelado"].includes(o.status) && new Date(o.created_at) >= today && tracked(o));
   const S = [
     ["novo", "Aguardando aceite", ICON.bell, live.filter(o => o.status === "novo"), "hot"],
     ["preparando", "Em preparo", ICON.flame, live.filter(o => o.status === "preparando"), ""],
@@ -2531,6 +2575,7 @@ async function vCaixa(el) {
     <div class="stat">${ICON.minusC}<span class="v" style="color:var(--bad)">${money(outs)}</span><span class="l">Saídas</span><span class="d flat">retiradas e despesas</span></div>
     <div class="stat">${ICON.users}<span class="v">${money(fiado)}</span><span class="l">Vendido no fiado</span><span class="d flat">recebido de fiado ${money(by("recebimento_fiado"))}</span></div>
   </section>
+  <div id="cx-qty"></div>
   <section class="cx-actions">
     <button class="cx-act" data-mv="sangria"><span class="ic">${ICON.minusC}</span><span>Retirada<small>Tirar dinheiro da gaveta</small></span></button>
     <button class="cx-act" data-mv="suprimento"><span class="ic">${ICON.plusC}</span><span>Reforço de troco<small>Colocar dinheiro</small></span></button>
@@ -2555,10 +2600,12 @@ async function vCaixa(el) {
     $("#cx-mv").innerHTML = list.length ? list.map(m => `<tr><td class="faint num">${fmtTime(m.created_at)}</td><td><b>${esc(m.description || KIND_LABEL[m.kind])}</b><div class="sub">${KIND_LABEL[m.kind]}</div></td><td class="hide-sm">${METHOD_LABEL[m.method]}</td>
       <td class="r"><span class="amt ${IN_KINDS.includes(m.kind) ? "in" : "out"}">${IN_KINDS.includes(m.kind) ? "+" : "−"}${money(m.amount)}</span></td></tr>`).join("") : `<tr><td colspan="4" class="empty-row">Nenhum lançamento.</td></tr>`; };
   drawMv();
+  soldQty(sess.opened_at).then(q => { const b = $("#cx-qty"); if (b) { b.innerHTML = qtyHTML(q, false); } }).catch(() => {});
   $$("[data-cf]", el).forEach(b => b.onclick = () => { AD.cf = b.dataset.cf; $$("[data-cf]", el).forEach(x => x.setAttribute("aria-pressed", x === b)); drawMv(); });
   $$("[data-mv]", el).forEach(b => b.onclick = () => moveSheet(b.dataset.mv));
   $("#cx-close").onclick = () => {
     const sh = openSheet(`<div class="sheet-head"><h2>Fechar caixa</h2><button class="btn icon ghost" data-close aria-label="Fechar">✕</button></div>
+      <div id="cc-qty"><p class="faint">Somando o que foi vendido…</p></div>
       <p class="muted">Conte o dinheiro da gaveta e digite o valor. O sistema mostra se sobrou ou faltou.</p>
       <div class="box"><div class="calc-row"><span>Esperado na gaveta</span><b class="num">${money(exp)}</b></div>
         ${methods.filter(m => m[0] !== "Dinheiro").map(([l, v]) => `<div class="calc-row"><span>${l}</span><b class="num">${money(v)}</b></div>`).join("")}</div>
@@ -2566,6 +2613,8 @@ async function vCaixa(el) {
       <div id="cc-diff"></div>
       <div class="field"><label for="cc-n">Observação</label><textarea class="input" id="cc-n" placeholder="Ex.: faltou R$ 5 do troco do motoboy"></textarea></div>
       <button class="btn primary block" id="cc-go" style="min-height:52px">Fechar caixa</button>`);
+    soldQty(sess.opened_at).then(q => { const box = $("#cc-qty", sh.el); if (!box) return; box.innerHTML = qtyHTML(q, false) + `<button class="btn ghost sm" id="cc-qprint" type="button">${ICON.receipt}Imprimir quantidades</button>`;
+      $("#cc-qprint", box).onclick = () => printQty(q, "VENDAS DO DIA", `${fmtDateLong(sess.opened_at)} · desde ${fmtTime(sess.opened_at)}`); }).catch(() => { const box = $("#cc-qty", sh.el); if (box) box.innerHTML = ""; });
     const v = $("#cc-v", sh.el);
     v.oninput = () => { const d = n2(parseMoney(v.value) - exp); $("#cc-diff", sh.el).innerHTML = v.value ? `<div class="diff ${d === 0 ? "ok" : d < 0 ? "bad" : "over"}">${d === 0 ? "O caixa bateu certinho" : d < 0 ? "Faltando " + money(-d) : "Sobrando " + money(d)}</div>` : ""; };
     $("#cc-go", sh.el).onclick = e => busy(e.currentTarget, async () => { if (!v.value) { toast("Digite o valor contado.", true); return; }
@@ -2574,7 +2623,40 @@ async function vCaixa(el) {
       const s2 = (await API.cashSessions({ from: new Date(sess.opened_at) })).find(x => x.id === sess.id); renderView(); if (s2) cashReport(s2); });
   };
 }
-function cashReport(s) {
+/* quantidade vendida no período do caixa (por categoria e por produto) */
+async function soldQty(from, to) {
+  const [orders, prods, cats] = await Promise.all([API.orders({ from: new Date(from), to: to ? new Date(new Date(to).getTime() + 1000) : undefined }), API.products(), API.categories()]);
+  const catOf = id => cats.find(c => c.id === prods.find(p => p.id === id)?.category_id)?.name || "Outros";
+  const ok = orders.filter(validOrder), byProd = new Map(), byCat = new Map();
+  ok.forEach(o => (o.order_items || []).forEach(i => { const k = i.name, c = catOf(i.product_id);
+    const r = byProd.get(k) || { name: k, cat: c, qty: 0, total: 0 }; r.qty += i.qty; r.total += Number(i.total); byProd.set(k, r);
+    byCat.set(c, (byCat.get(c) || 0) + i.qty); }));
+  const prodList = [...byProd.values()].sort((a, b) => b.qty - a.qty);
+  const total = sumBy(prodList, r => r.qty), drinks = sumBy(prodList.filter(r => /bebida/i.test(r.cat)), r => r.qty);
+  return { total, salgados: total - drinks, drinks, byCat: [...byCat.entries()].sort((a, b) => b[1] - a[1]), prodList,
+    pendentes: ok.filter(o => o.payment_status === "pendente").length, pedidos: ok.length };
+}
+function qtyHTML(q, open = true) {
+  if (!q.total) return `<div class="box"><span class="lbl">Quantidade vendida</span><p class="muted">Nenhum produto vendido neste caixa.</p></div>`;
+  return `<div class="box qty-box"><span class="lbl">Quantidade vendida</span>
+    <div class="qty-big"><div><b class="num">${q.salgados}</b><span>${q.drinks ? "salgados e doces" : "itens vendidos"}</span></div>${q.drinks ? `<div><b class="num">${q.drinks}</b><span>bebidas</span></div>` : ""}<div><b class="num">${q.pedidos}</b><span>vendas</span></div></div>
+    ${q.byCat.length > 1 ? `<div class="qty-cats">${q.byCat.map(([c, n]) => `<span class="chip">${esc(c)} <b class="num">${n}</b></span>`).join("")}</div>` : ""}
+    <details class="qty-det" ${open ? "open" : ""}><summary>Quantidade por produto</summary>${q.prodList.map(r => `<div class="calc-row"><span>${esc(r.name)}</span><b class="num">${r.qty}</b></div>`).join("")}</details>
+    ${q.pendentes ? `<p class="faint" style="font-size:.8rem">Inclui ${q.pendentes} conta${q.pendentes > 1 ? "s" : ""} ainda não paga${q.pendentes > 1 ? "s" : ""}.</p>` : ""}</div>`;
+}
+function printQty(q, title, sub) {
+  const s = AD.s || {}, w = Number(s.receipt_width) === 58 ? 58 : 80, fam = RECEIPT_FONTS[s.receipt_font]?.[1] || RECEIPT_FONTS.mono[1];
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>@page{size:${w}mm auto;margin:0}body{margin:0;font:${receiptFontPx(s, w)}px/1.35 ${fam};font-weight:${s.receipt_bold ? 700 : 400};color:#000}
+    .rc{width:${w}mm;padding:3mm ${w === 58 ? 2 : 4}mm}.c{text-align:center}.b{font-weight:${s.receipt_bold ? 900 : 700}}.big{font-size:1.25em}.hr{border-top:1px dashed #000;margin:5px 0}.r{display:flex;justify-content:space-between;gap:8px}</style></head><body><div class="rc">
+    <div class="c b big">${esc(s.receipt_title || s.store_name || "Bruno Salgados")}</div><div class="c b">${esc(title)}</div><div class="c">${esc(sub)}</div><div class="hr"></div>
+    <div class="r b big"><span>${q.drinks ? "SALGADOS E DOCES" : "ITENS VENDIDOS"}</span><span>${q.salgados}</span></div>${q.drinks ? `<div class="r b"><span>BEBIDAS</span><span>${q.drinks}</span></div>` : ""}<div class="r"><span>Vendas</span><span>${q.pedidos}</span></div>
+    ${q.byCat.length > 1 ? `<div class="hr"></div>${q.byCat.map(([c, n]) => `<div class="r"><span>${esc(c)}</span><span>${n}</span></div>`).join("")}` : ""}
+    <div class="hr"></div>${q.prodList.map(r => `<div class="r"><span>${esc(r.name)}</span><span>${r.qty}</span></div>`).join("")}<div class="hr"></div></div></body></html>`;
+  const f = document.createElement("iframe"); f.style.cssText = "position:fixed;width:0;height:0;border:0;visibility:hidden"; document.body.appendChild(f);
+  const d = f.contentWindow.document; d.open(); d.write(html); d.close(); setTimeout(() => { try { f.contentWindow.focus(); f.contentWindow.print(); } catch {} setTimeout(() => f.remove(), 60000); }, 250);
+}
+async function cashReport(s) {
+  const q = await soldQty(s.opened_at, s.closed_at).catch(() => null);
   const mv = (s.cash_movements || []).slice().sort((a, b) => a.created_at.localeCompare(b.created_at));
   const sumK = (f) => sumBy(mv.filter(f), m => m.amount);
   const d = Number(s.difference || 0);
@@ -2585,8 +2667,10 @@ function cashReport(s) {
     <div class="box">${[["dinheiro", "Dinheiro"], ["pix", "Pix"], ["cartao", "Cartão"], ["mercadopago", "Mercado Pago"]].map(([k, l]) => `<div class="calc-row"><span>${l}</span><b class="num">${money(sumK(m => ["venda", "recebimento_fiado"].includes(m.kind) && (k === "cartao" ? m.method.startsWith("cartao") : m.method === k)))}</b></div>`).join("")}
       <div class="calc-row"><span>Troco inicial</span><b class="num">${money(s.opening_amount)}</b></div></div>
     ${s.notes ? `<p class="muted">${esc(s.notes)}</p>` : ""}
+    ${q ? qtyHTML(q) + `<button class="btn ghost" id="cr-qprint" style="align-self:flex-start">${ICON.receipt}Imprimir quantidades</button>` : ""}
     <div class="tl">${mv.map(m => `<div class="tl-i"><span class="h">${fmtTime(m.created_at)}</span><div style="min-width:0"><div style="font-weight:600">${esc(m.description || KIND_LABEL[m.kind])}</div><div class="faint" style="font-size:.8rem">${KIND_LABEL[m.kind]} · ${METHOD_LABEL[m.method]}</div></div>
       <span class="amt ${IN_KINDS.includes(m.kind) ? "in" : "out"}">${IN_KINDS.includes(m.kind) ? "+" : "−"}${money(m.amount)}</span></div>`).join("") || `<p class="muted">Sem lançamentos.</p>`}</div>`);
+  const pb = $("#cr-qprint"); if (pb && q) pb.onclick = () => printQty(q, "VENDAS DO CAIXA", `${fmtDateLong(s.opened_at)} · ${fmtTime(s.opened_at)} às ${s.closed_at ? fmtTime(s.closed_at) : "agora"}`);
 }
 
 /* ================= CLIENTES ================= */
@@ -2768,7 +2852,7 @@ const stItem = (s, exp) => `<figure class="st-item ${exp ? "exp" : ""}" style="m
 /* ================= CONFIGURAÇÕES ================= */
 async function vAjustes(el) {
   const s = AD.s = await API.settings();
-  AD.cfg = { ...s }; AD.stab ||= "loja";
+  AD.cfg = { receipt_font: "mono", receipt_font_size: 100, receipt_show_unit: true, receipt_show_fiscal: true, ...s }; AD.stab ||= "loja";
   const T = [["loja", "Loja"], ["entrega", "Entrega e frete"], ["pagamento", "Pagamentos"], ["recibo", "Recibo e avisos"], ["whatsapp", "WhatsApp"], ["divulgar", "Link do app"], ["conta", "Conta"]];
   el.innerHTML = head("Configurações", "Dados da loja, entrega, pagamentos e divulgação", `<button class="btn primary" id="aj-save">Salvar alterações</button>`) + `
     <div class="set-grid"><nav class="set-nav">${T.map(([k, l]) => `<button data-st="${k}" aria-current="${AD.stab === k}">${l}</button>`).join("")}</nav><div class="card" id="aj-body"></div></div>`;
@@ -2807,8 +2891,20 @@ async function vAjustes(el) {
         ${sw("receipt_auto", "Imprimir recibo automaticamente", "Ao aceitar o pedido, o recibo sai sozinho. Desligado, o painel pergunta se quer imprimir.")}
         <div class="grid2"><div class="field"><label for="aj-rw">Largura do papel</label><select class="input" id="aj-rw" data-k="receipt_width"><option value="80" ${Number(C.receipt_width) !== 58 ? "selected" : ""}>80 mm (mais comum)</option><option value="58" ${Number(C.receipt_width) === 58 ? "selected" : ""}>58 mm (bobina pequena)</option></select></div>
           <div class="field"><label for="aj-rc">Vias</label><select class="input" id="aj-rc" data-k="receipt_copies">${[1, 2, 3].map(n => `<option value="${n}" ${Number(C.receipt_copies) === n ? "selected" : ""}>${n} via${n > 1 ? "s" : ""}</option>`).join("")}</select></div></div>
-        ${f("receipt_footer", "Mensagem no fim do recibo")}
-        <div class="row"><button class="btn" type="button" id="aj-rprev">Ver recibo de exemplo</button><button class="btn ghost" type="button" id="aj-rtest">Imprimir teste</button></div>
+        <div class="rc-set"><div class="rc-form">
+          <div class="card-h" style="margin-top:6px"><h3>Letra do cupom</h3></div>
+          <div class="field"><label for="aj-rf">Fonte</label><select class="input" id="aj-rf" data-k="receipt_font">${Object.entries(RECEIPT_FONTS).map(([k, [l]]) => `<option value="${k}" ${C.receipt_font === k ? "selected" : ""}>${l}</option>`).join("")}</select></div>
+          <div class="field"><label for="aj-rs">Tamanho da letra: <b id="aj-rs-v">${Number(C.receipt_font_size) || 100}%</b></label><input type="range" id="aj-rs" data-k="receipt_font_size" min="70" max="180" step="5" value="${Number(C.receipt_font_size) || 100}" style="accent-color:var(--accent)"></div>
+          ${sw("receipt_bold", "Letra em negrito", "Ajuda quando a impressora imprime fraco ou apagado")}
+          <div class="card-h" style="margin-top:6px"><h3>Dados impressos</h3></div>
+          ${f("receipt_title", "Nome no topo do cupom", `placeholder="${esc(C.store_name || "Bruno Salgados")}"`)}
+          <div class="field"><label for="aj-rh">Linhas abaixo do nome</label><textarea class="input" id="aj-rh" data-k="receipt_header" rows="4" placeholder="CNPJ 00.000.000/0001-00&#10;${esc(C.address || "Rua, número, bairro")}&#10;WhatsApp ${esc(C.whatsapp || "(19) 99999-0000")}">${esc(C.receipt_header || "")}</textarea>
+            <span class="faint" style="font-size:.8rem">Uma informação por linha (CNPJ, endereço, telefone, Instagram…). Em branco, sai o endereço e o WhatsApp da loja.</span></div>
+          ${f("receipt_footer", "Mensagem no fim do cupom")}
+          ${sw("receipt_show_unit", "Mostrar o preço de cada unidade", "Desligado, cada item ocupa uma linha só")}
+          ${sw("receipt_show_fiscal", "Mostrar “Não é documento fiscal”")}
+        </div><div class="rc-live"><span class="lbl">Prévia do cupom</span><div class="rcpt-prev"><iframe title="Prévia do cupom" id="aj-rlive"></iframe></div></div></div>
+        <div class="row"><button class="btn" type="button" id="aj-rprev">Ver cupom grande</button><button class="btn ghost" type="button" id="aj-rtest">Imprimir teste</button></div>
         <div class="box" style="font-size:.86rem;color:var(--fg-2)"><b style="color:var(--fg)">Sobre a impressora</b>
           <span>Funciona com impressora térmica (USB, rede ou Bluetooth) instalada neste computador e escolhida como padrão. Para o recibo sair sem a janela de confirmação do navegador, abra o painel no Google Chrome com a impressão silenciosa ligada (atalho com a opção --kiosk-printing).</span>
           <span>Maquininhas de cartão (Stone, PagSeguro, Cielo e outras) só imprimem pelo aplicativo delas; um site não consegue mandar o recibo para elas.</span></div>`,
@@ -2842,7 +2938,9 @@ async function vAjustes(el) {
             row("Último backup", y.last_backup, 9, "Cópia criptografada toda semana no GitHub") +
             `<p class="faint" style="font-size:.8rem">Stories vencidos há mais de 2 dias são apagados sozinhos para economizar espaço.</p>`; })()}`
     }[AD.stab];
-    $$("[data-k]", b).forEach(i => i.oninput = i.onchange = () => { const k = i.dataset.k; C[k] = i.type === "checkbox" ? i.checked : i.dataset.m ? (i.value.trim() === "" ? null : parseMoney(i.value)) : i.value; sim(); });
+    $$("[data-k]", b).forEach(i => i.oninput = i.onchange = () => { const k = i.dataset.k; C[k] = i.type === "checkbox" ? i.checked : i.dataset.m ? (i.value.trim() === "" ? null : parseMoney(i.value)) : i.value; sim(); live(); });
+    const live = () => { const fr = $("#aj-rlive", b); if (!fr) return; $("#aj-rs-v", b) && ($("#aj-rs-v", b).textContent = (Number(C.receipt_font_size) || 100) + "%");
+      fr.srcdoc = receiptHTML(sample(), { ...AD.s, ...C, receipt_copies: 1 }); };
     const sim = () => { const box = $("#aj-sim", b); if (!box) return; const t = { delivery_base_fee: Number(C.delivery_base_fee || 0), delivery_included_km: Number(String(C.delivery_included_km).replace(",", ".")) || 0, delivery_per_km: Number(C.delivery_per_km || 0), delivery_max_km: Number(String(C.delivery_max_km).replace(",", ".")) || 0, free_delivery_over: null };
       box.innerHTML = [1, 3, 5, 8, 12].map(k => { const r = calcFee(t, k, 0); return `<div class="calc-row"><span>${k} km</span><b class="num">${r.ok ? money(r.fee) : "fora da área"}</b></div>`; }).join(""); };
     sim();
@@ -2855,8 +2953,9 @@ async function vAjustes(el) {
     $("#aj-play", b) && ($("#aj-play", b).onclick = () => playAlert(C.alert_sound, C.alert_volume));
     $("#aj-vol", b) && ($("#aj-vol", b).oninput = e => { C.alert_volume = Number(e.target.value); });
     $("#aj-vol", b) && ($("#aj-vol", b).onchange = () => playAlert(C.alert_sound, C.alert_volume));
-    const sample = () => ({ code: 1234, created_at: new Date().toISOString(), fulfillment: "entrega", customer_name: "Maria Souza", customer_phone: "(19) 99999-0000", address: "Rua das Acácias, 120 · Jardim Primavera", address_ref: "Portão verde",
-      order_items: [{ qty: 6, name: "Coxinha de frango", unit_price: 10, total: 60 }, { qty: 1, name: "Refrigerante lata", unit_price: 6, total: 6 }], subtotal: 66, delivery_fee: 7, discount: 0, total: 73, payment_method: "dinheiro", change_for: 100, payment_status: "pendente", notes: "Tocar a campainha" });
+    function sample() { return ({ code: 1234, created_at: new Date().toISOString(), fulfillment: "entrega", customer_name: "Maria Souza", customer_phone: "(19) 99999-0000", address: "Rua das Acácias, 120 · Jardim Primavera", address_ref: "Portão verde",
+      order_items: [{ qty: 6, name: "Coxinha de frango", unit_price: 10, total: 60 }, { qty: 1, name: "Refrigerante lata", unit_price: 6, total: 6 }], subtotal: 66, delivery_fee: 7, discount: 0, total: 73, payment_method: "dinheiro", change_for: 100, payment_status: "pendente", notes: "Tocar a campainha" }); }
+    live();
     const withCfg = fn => { const prev = AD.s; AD.s = { ...AD.s, ...C }; try { fn(); } finally { AD.s = prev; } };
     $("#aj-rprev", b) && ($("#aj-rprev", b).onclick = () => withCfg(() => previewReceipt(sample())));
     $("#aj-rtest", b) && ($("#aj-rtest", b).onclick = () => withCfg(() => printReceipt(sample())));
@@ -2869,7 +2968,9 @@ async function vAjustes(el) {
   $("#aj-save").onclick = e => busy(e.currentTarget, async () => {
     const num = v => v === "" || v == null ? null : Number(String(v).replace(",", "."));
     const { id, updated_at, ...patch } = C;
-    Object.assign(patch, { table_count: Math.max(0, Math.min(99, parseInt(C.table_count) || 0)), receipt_width: Number(C.receipt_width) || 80, receipt_copies: Number(C.receipt_copies) || 1, alert_volume: Number(C.alert_volume ?? .8), lat: num(C.lat), lng: num(C.lng), prep_minutes: Number(C.prep_minutes) || 30, delivery_included_km: num(C.delivery_included_km) ?? 0, delivery_max_km: num(C.delivery_max_km) ?? 10,
+    Object.assign(patch, { table_count: Math.max(0, Math.min(99, parseInt(C.table_count) || 0)), receipt_width: Number(C.receipt_width) || 80, receipt_copies: Number(C.receipt_copies) || 1,
+      receipt_font_size: Math.max(70, Math.min(180, Number(C.receipt_font_size) || 100)), receipt_font: RECEIPT_FONTS[C.receipt_font] ? C.receipt_font : "mono",
+      receipt_title: (C.receipt_title || "").trim() || null, receipt_header: (C.receipt_header || "").trim() || null, alert_volume: Number(C.alert_volume ?? .8), lat: num(C.lat), lng: num(C.lng), prep_minutes: Number(C.prep_minutes) || 30, delivery_included_km: num(C.delivery_included_km) ?? 0, delivery_max_km: num(C.delivery_max_km) ?? 10,
       delivery_base_fee: C.delivery_base_fee ?? 0, delivery_per_km: C.delivery_per_km ?? 0, delivery_min_order: C.delivery_min_order ?? 0, payment_provider: C.mp_public_key ? "mercadopago" : "none" });
     AD.s = await API.saveSettings(patch); toast("Configurações salvas. O app do cliente já foi atualizado."); renderView(); });
   draw();
@@ -3094,13 +3195,24 @@ function playAlert(kind, vol) {
 }
 
 /* ---------- recibo ---------- */
+// fontes que toda impressora térmica imprime bem pelo Windows
+const RECEIPT_FONTS = {
+  mono: ["Courier (padrão de cupom)", '"Courier New",ui-monospace,monospace'],
+  sans: ["Arial (mais legível)", 'Arial,Helvetica,sans-serif'],
+  condensed: ["Arial estreita (cabe mais)", '"Arial Narrow","Roboto Condensed","Liberation Sans Narrow",Arial,sans-serif'],
+  serif: ["Times (clássica)", '"Times New Roman",Times,serif'],
+};
+const receiptFontPx = (s, w) => n2((w === 58 ? 11 : 12.5) * Math.max(70, Math.min(180, Number(s.receipt_font_size) || 100)) / 100);
 function receiptHTML(o, s = AD.s || {}) {
   const w = Number(s.receipt_width) === 58 ? 58 : 80, items = o.order_items || o.items || [];
+  const showUnit = s.receipt_show_unit !== false, showFiscal = s.receipt_show_fiscal !== false;
+  const header = String(s.receipt_header || "").split("\n").map(x => x.trim()).filter(Boolean);
   const line = (a, b, cls = "") => `<div class="r ${cls}"><span>${a}</span><span>${b}</span></div>`;
   const parts = payParts(o);
   const one = `<div class="rc">
-    <div class="c b big">${esc(s.store_name || "Bruno Salgados")}</div>
-    ${s.address ? `<div class="c sm">${esc(s.address)}</div>` : ""}${s.whatsapp ? `<div class="c sm">WhatsApp ${esc(s.whatsapp)}</div>` : ""}
+    <div class="c b big">${esc(s.receipt_title || s.store_name || "Bruno Salgados")}</div>
+    ${header.length ? header.map(l => `<div class="c sm">${esc(l)}</div>`).join("")
+      : `${s.address ? `<div class="c sm">${esc(s.address)}</div>` : ""}${s.whatsapp ? `<div class="c sm">WhatsApp ${esc(s.whatsapp)}</div>` : ""}`}
     <div class="hr"></div>
     <div class="c b big">PEDIDO Nº ${o.code}</div>
     <div class="c sm">${new Date(o.created_at).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}</div>
@@ -3109,7 +3221,8 @@ function receiptHTML(o, s = AD.s || {}) {
     <div><b>Cliente:</b> ${esc(o.customer_name)}</div>${o.customer_phone ? `<div><b>Telefone:</b> ${esc(o.customer_phone)}</div>` : ""}
     ${o.fulfillment === "entrega" ? `<div><b>Endereço:</b> ${esc(o.address || "")}</div>${o.address_ref ? `<div><b>Ref.:</b> ${esc(o.address_ref)}</div>` : ""}` : ""}
     <div class="hr"></div>
-    ${items.map(i => `<div class="it"><div>${i.qty}x ${esc(i.name)}</div><div class="r sm"><span>${i.qty} x ${money(i.unit_price ?? i.total / i.qty)}</span><span>${money(i.total)}</span></div></div>`).join("")}
+    ${items.map(i => showUnit ? `<div class="it"><div>${i.qty}x ${esc(i.name)}</div><div class="r sm"><span>${i.qty} x ${money(i.unit_price ?? i.total / i.qty)}</span><span>${money(i.total)}</span></div></div>`
+      : `<div class="it r"><span>${i.qty}x ${esc(i.name)}</span><span>${money(i.total)}</span></div>`).join("")}
     <div class="hr"></div>
     ${line("Subtotal", money(o.subtotal))}${Number(o.delivery_fee) ? line("Taxa de entrega", money(o.delivery_fee)) : ""}${Number(o.discount) ? line("Desconto", "-" + money(o.discount)) : ""}
     ${line("TOTAL", money(o.total), "b big")}
@@ -3120,12 +3233,12 @@ function receiptHTML(o, s = AD.s || {}) {
     ${o.notes ? `<div class="hr"></div><div><b>Obs.:</b> ${esc(o.notes)}</div>` : ""}
     ${o.stock_alerts?.length ? `<div class="hr"></div><div class="b">ATENÇÃO ESTOQUE:</div>${o.stock_alerts.map(a => `<div>${esc(a.name)}: ${a.stock <= 0 ? "ACABOU" : "restam " + a.stock}</div>`).join("")}` : ""}
     <div class="hr"></div>
-    ${s.receipt_footer ? `<div class="c">${esc(s.receipt_footer)}</div>` : ""}<div class="c sm">Não é documento fiscal</div></div>`;
+    ${s.receipt_footer ? `<div class="c">${esc(s.receipt_footer)}</div>` : ""}${showFiscal ? `<div class="c sm">Não é documento fiscal</div>` : ""}</div>`;
   const copies = Math.max(1, Math.min(3, Number(s.receipt_copies) || 1));
   return `<!doctype html><html><head><meta charset="utf-8"><title>Pedido ${o.code}</title><style>
-    @page{size:${w}mm auto;margin:0}*{box-sizing:border-box}body{margin:0;font:${w === 58 ? 11 : 12.5}px/1.35 "Courier New",ui-monospace,monospace;color:#000;background:#fff}
+    @page{size:${w}mm auto;margin:0}*{box-sizing:border-box}body{margin:0;font:${receiptFontPx(s, w)}px/1.35 ${RECEIPT_FONTS[s.receipt_font]?.[1] || RECEIPT_FONTS.mono[1]};font-weight:${s.receipt_bold ? 700 : 400};color:#000;background:#fff;-webkit-font-smoothing:none}
     .rc{width:${w}mm;padding:3mm ${w === 58 ? 2 : 4}mm;page-break-after:always}.rc:last-child{page-break-after:auto}
-    .c{text-align:center}.b{font-weight:700}.big{font-size:1.25em}.sm{font-size:.88em}.hr{border-top:1px dashed #000;margin:5px 0}
+    .c{text-align:center}.b{font-weight:${s.receipt_bold ? 900 : 700}}.big{font-size:1.25em}.sm{font-size:.88em}.hr{border-top:1px dashed #000;margin:5px 0}
     .r{display:flex;justify-content:space-between;gap:8px}.it{margin-bottom:3px}</style></head><body>${Array(copies).fill(one).join("")}</body></html>`;
 }
 function printReceipt(o, { silentFail } = {}) {

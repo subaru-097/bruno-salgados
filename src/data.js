@@ -29,7 +29,7 @@ const ERR = {
   LOJA_FECHADA: "A loja está fechada agora. Tente mais tarde.",
   FORA_DO_RAIO: "Esse endereço está fora da área de entrega.",
   LOJA_SEM_LOCALIZACAO: "A loja ainda não configurou o endereço de saída das entregas. Escolha retirada.",
-  ENDERECO_INVALIDO: "Não encontramos esse endereço. Confira o CEP e o número.",
+  ENDERECO_INVALIDO: "Endereço não encontrado ou em branco. Confira a rua, o número e o CEP.",
   ENTREGA_DESATIVADA: "Entregas estão pausadas no momento. Escolha retirada.",
   RETIRADA_DESATIVADA: "Retirada indisponível no momento.",
   CAIXA_FECHADO: "Abra o caixa antes de registrar pagamentos.",
@@ -371,6 +371,7 @@ function makeDemoApi() {
       if (!String(p.customer_name || "").trim()) fail("NOME_OBRIGATORIO");
       if (!p.items?.length) fail("CARRINHO_VAZIO");
       if (p.payment_method === "fiado" && !p.customer_id) fail("CLIENTE_OBRIGATORIO_FIADO");
+      if (ch === "balcao" && p.fulfillment === "entrega" && !String(p.address || "").trim()) fail("ENDERECO_INVALIDO");
       for (const it of p.items) { const pr = S.products.find(x => x.id === it.product_id);
         if (!pr || !pr.is_active) fail("PRODUTO_INDISPONIVEL:" + (pr?.name || "?"));
         if (pr.track_stock && pr.stock < it.qty) fail(`SEM_ESTOQUE:${pr.name}:${pr.stock}`); }
@@ -382,12 +383,12 @@ function makeDemoApi() {
       else if (ch === "balcao") fee = Number(p.delivery_fee || 0);
       const disc = Number(p.discount || 0);
       const o = { id: uid(), code: S.code++, channel: ch, customer_id: p.customer_id || null, customer_name: p.customer_name.trim(), customer_phone: p.customer_phone || null,
-        fulfillment: ch === "balcao" ? "balcao" : p.fulfillment, address: p.address || null, address_ref: p.address_ref || null, distance_km: dist,
+        fulfillment: ch === "balcao" ? (p.fulfillment === "entrega" ? "entrega" : "balcao") : p.fulfillment, address: p.address || null, address_ref: p.address_ref || null, distance_km: dist,
         subtotal: sub, delivery_fee: fee, discount: disc, total: Math.max(0, sub + fee - disc), payment_method: p.payment_method, change_for: p.change_for || null,
         payment_status: "pendente", status: "novo", notes: p.notes || null, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), order_items: items };
       S.orders.push(o);
       if (p.payments?.length) o.payment_method = p.payments.length > 1 ? "misto" : p.payments[0].method;
-      if (ch === "balcao" && p.pay_now) { if (p.payments?.length) paySplit(o, p.payments, p.customer_id); else pay(o, p.payment_method, p.customer_id); o.status = "entregue"; }
+      if (ch === "balcao" && p.pay_now) { if (p.payments?.length) paySplit(o, p.payments, p.customer_id); else pay(o, p.payment_method, p.customer_id); o.status = o.fulfillment === "entrega" ? "preparando" : "entregue"; }
       tick("products"); tick("orders", { eventType: "INSERT", new: o });
       return { id: o.id, code: o.code, subtotal: sub, delivery_fee: fee, total: o.total };
     },

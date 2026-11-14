@@ -61,11 +61,20 @@ create table if not exists public.store_settings (
   wa_debt_text text default 'Oi {nome}, tudo bem? Aqui é da {loja}. Seu saldo em aberto é de {valor}. Pode pagar no Pix {pix} ou na loja. Obrigado!'::text,
   wa_story_ask boolean default true not null,
   table_count integer default 6 not null,
+  receipt_title text,
+  receipt_header text,
+  receipt_font text default 'mono'::text not null,
+  receipt_font_size integer default 100 not null,
+  receipt_bold boolean default false not null,
+  receipt_show_unit boolean default true not null,
+  receipt_show_fiscal boolean default true not null,
   constraint store_settings_pkey PRIMARY KEY (id),
   constraint store_settings_id_check CHECK ((id = 1)),
   constraint store_settings_payment_provider_check CHECK ((payment_provider = ANY (ARRAY['none'::text, 'mercadopago'::text, 'asaas'::text, 'infinitepay'::text, 'stripe'::text]))),
   constraint store_settings_receipt_copies_check CHECK (((receipt_copies >= 1) AND (receipt_copies <= 3))),
   constraint store_settings_receipt_width_check CHECK ((receipt_width = ANY (ARRAY[58, 80]))),
+  constraint store_settings_receipt_font_check CHECK ((receipt_font = ANY (ARRAY['mono'::text, 'sans'::text, 'condensed'::text, 'serif'::text]))),
+  constraint store_settings_receipt_font_size_check CHECK (((receipt_font_size >= 70) AND (receipt_font_size <= 180))),
   constraint store_settings_table_count_check CHECK (((table_count >= 0) AND (table_count <= 99))),
   constraint store_settings_wa_mode_check CHECK ((wa_mode = ANY (ARRAY['manual'::text, 'api'::text])))
 );
@@ -538,11 +547,12 @@ begin
       raise exception 'MUITOS_PEDIDOS'; end if;
   end if;
   if v_method = 'fiado' and v_cust is null then raise exception 'CLIENTE_OBRIGATORIO_FIADO'; end if;
+  if v_channel = 'balcao' and v_fulfill = 'entrega' and coalesce(trim(p->>'address'), '') = '' then raise exception 'ENDERECO_INVALIDO'; end if;
 
   insert into public.orders(channel, customer_id, customer_name, customer_phone, fulfillment, address, address_ref,
     lat, lng, payment_method, change_for, notes, discount)
   values (v_channel, v_cust, v_name, nullif(v_phone,''),
-    case when v_channel = 'balcao' then 'balcao' else v_fulfill end,
+    case when v_channel = 'balcao' then (case when v_fulfill = 'entrega' then 'entrega' else 'balcao' end) else v_fulfill end,
     left(p->>'address', 300), left(p->>'address_ref', 200), (p->>'lat')::float8, (p->>'lng')::float8,
     v_method, case when v_change > 0 then least(v_change, 100000) end, left(p->>'notes', 500), v_disc)
   returning id, code into v_order, v_code;
@@ -579,7 +589,7 @@ begin
   if v_channel = 'balcao' and v_pay_now then
     if v_pays is not null then perform public.pay_order_split(v_order, v_pays, v_cust);
     else perform public.pay_order(v_order, v_method, v_cust); end if;
-    update public.orders set status = 'entregue', updated_at = now() where id = v_order;
+    update public.orders set status = case when v_fulfill = 'entrega' then 'preparando' else 'entregue' end, updated_at = now() where id = v_order;
   end if;
   return jsonb_build_object('id', v_order, 'code', v_code, 'subtotal', v_sub, 'delivery_fee', v_fee, 'total', v_total);
 end $function$;

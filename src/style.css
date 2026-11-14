@@ -908,3 +908,22 @@ table.tbl{border-collapse:collapse;width:100%;font-size:.93rem;font-variant-nume
   .shortcuts button{flex:none}
   .hide-sm{display:none}
 }
+/* venda com entrega (balcão) */
+.ent-seg button{display:inline-flex;align-items:center;justify-content:center;gap:6px}.ent-seg .svg-i{width:16px;height:16px}
+.ent-box{display:flex;flex-direction:column;gap:10px;padding:12px;border-radius:14px;background:var(--surface-2);border:1px solid var(--line)}
+.ent-box .field{margin:0}
+.ent-info{display:flex;flex-direction:row;gap:10px;align-items:flex-start}.ent-info>div{display:flex;flex-direction:column;gap:2px;min-width:0}.ent-info .svg-i{flex:none;color:var(--accent);margin-top:2px}
+/* configurações do cupom com prévia ao lado */
+.rc-set{display:grid;grid-template-columns:minmax(0,1fr) 352px;gap:20px;align-items:start}
+.rc-form{display:flex;flex-direction:column;gap:12px;min-width:0}
+.rc-live{position:sticky;top:12px;display:flex;flex-direction:column;gap:8px}
+.rc-live .rcpt-prev{padding:10px}.rc-live .rcpt-prev iframe{width:330px;height:520px}
+@media (max-width:900px){.rc-set{grid-template-columns:1fr}.rc-live{position:static}}
+/* quantidade vendida no caixa */
+.qty-box{gap:10px}
+.qty-big{display:flex;gap:10px;flex-wrap:wrap}
+.qty-big>div{flex:1;min-width:110px;display:flex;flex-direction:column;padding:12px 14px;border-radius:14px;background:var(--surface);border:1px solid var(--line)}
+.qty-big b{font-size:1.9rem;font-weight:800;line-height:1.1;color:var(--accent-text)}.qty-big span{font-size:.85rem;color:var(--fg-2)}
+.qty-cats{display:flex;gap:6px;flex-wrap:wrap}.qty-cats .chip b{margin-left:4px}
+.qty-det summary{cursor:pointer;font-weight:700;padding:6px 0;color:var(--fg)}.qty-det .calc-row{padding:5px 0}
+#cx-qty:empty{display:none}
